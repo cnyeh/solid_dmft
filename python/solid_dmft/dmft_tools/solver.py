@@ -992,7 +992,7 @@ class SolverStructure:
         # cast warmup cycles to int in case given in scientific notation
         self.triqs_solver_params['n_warmup_cycles'] = int(self.solver_params['n_warmup_cycles'])
 
-        # Rename parameters that are differentin ctseg than cthyb
+        # Rename parameters that are different in ctseg than cthyb
         self.triqs_solver_params['measure_gt'] = self.solver_params['measure_G_tau']
         self.triqs_solver_params['measure_perturbation_order_histograms'] = self.solver_params['measure_pert_order']
 
@@ -1429,7 +1429,7 @@ class SolverStructure:
             self.G_l << legendre_filter.apply(self.G_time, self.solver_params['n_l'])
             # get G_time, G_freq, Sigma_freq from G_l
             set_Gs_from_G_l()
-        elif self.solver_params['perform_tail_fit']:
+        elif self.solver_params['perform_tail_fit'] and not self.solver_params['improved_estimator']:
             self.Sigma_freq = inverse(self.G0_freq) - inverse(self.G_freq)
             # without any degenerate shells we run the minimization for all blocks
             self.Sigma_freq, tail = _fit_tail_window(self.Sigma_freq,
@@ -1461,6 +1461,19 @@ class SolverStructure:
             for block, fw in self.F_freq:
                 for iw in fw.mesh:
                     self.Sigma_freq[block][iw] = self.F_freq[block][iw] / self.G_freq[block][iw]
+
+            # Further tail fitting on top of Sigma_freq from the improved estimator
+            if self.solver_params['perform_tail_fit']:
+                # without any degenerate shells we run the minimization for all blocks
+                self.Sigma_freq, tail = _fit_tail_window(self.Sigma_freq,
+                                                         fit_min_n=self.solver_params['fit_min_n'],
+                                                         fit_max_n=self.solver_params['fit_max_n'],
+                                                         fit_min_w=self.solver_params['fit_min_w'],
+                                                         fit_max_w=self.solver_params['fit_max_w'],
+                                                         fit_max_moment=self.solver_params['fit_max_moment'], )
+                self.Sigma_Hartree = {}
+                for block in tail.keys():
+                    self.Sigma_Hartree[block] = tail[block][0]
 
         elif self.solver_params['crm_dyson_solver']:
             from triqs.gf.dlr_crm_dyson_solver import minimize_dyson
