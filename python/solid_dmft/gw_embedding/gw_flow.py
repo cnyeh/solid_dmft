@@ -399,15 +399,21 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
 
             # Make non-interacting operator for Hloc0
             Hloc_0 = Operator()
-            for spin, spin_block in imp_eal.items():
-                for o1 in range(spin_block.shape[0]):
-                    for o2 in range(spin_block.shape[1]):
-                        # check if off-diag element is larger than threshold
-                        if o1 != o2 and abs(spin_block[o1, o2]) < solvers[ish].solver_params['off_diag_threshold']:
-                            continue
-                        else:
-                            # TODO: adapt for SOC calculations, which should keep the imag part
-                            Hloc_0 += spin_block[o1, o2].real / 2 * (c_dag(spin, o1) * c(spin, o2) + c_dag(spin, o2) * c(spin, o1))
+            if solver_type_per_imp[ish] == 'ctseg':
+                mpi.report('Discarding off-diagonals in Hloc_0 for the requirements of ctseg.')
+                for spin, spin_block in imp_eal.items():
+                    for o1 in range(spin_block.shape[0]):
+                        Hloc_0 += spin_block[o1, o1].real * c_dag(spin, o1) * c(spin, o1)
+            else:
+                for spin, spin_block in imp_eal.items():
+                    for o1 in range(spin_block.shape[0]):
+                        for o2 in range(spin_block.shape[1]):
+                            # check if off-diag element is larger than threshold
+                            if o1 != o2 and abs(spin_block[o1, o2]) < solver_params[ish]['off_diag_threshold']:
+                                continue
+                            else:
+                                # TODO: adapt for SOC calculations, which should keep the imag part
+                                Hloc_0 += spin_block[o1, o2].real / 2 * (c_dag(spin, o1) * c(spin, o2) + c_dag(spin, o2) * c(spin, o1))
             solvers[ish].Hloc_0 = Hloc_0
 
         mpi.report('\nSolving the impurity problem for shell {} ...'.format(ish))
@@ -482,9 +488,9 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
             for i, (block, gf) in enumerate(Sigma_dlr_sumk):
                 Vhf_imp_sIab[i,ish] = Sigma_Hartree_sumk[block]
                 # Make sure sigma_ir[iw].conj() = sigma_ir[-iw]
-                for n in range(ir_nw_half):
-                    iw_pos = ir_nw_half+n
-                    iw_neg = ir_nw_half-1-n
+                for w in range(ir_nw_half):
+                    iw_pos = ir_nw_half+w
+                    iw_neg = ir_nw_half-1-w
                     Sigma_ir[iw_pos,i,ish] = gf(iw_mesh(ir_mesh_idx[iw_pos]))
                     Sigma_ir[iw_neg,i,ish] = gf(iw_mesh(ir_mesh_idx[iw_pos])).conj()
 
