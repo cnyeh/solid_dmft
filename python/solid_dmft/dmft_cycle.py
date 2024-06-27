@@ -568,8 +568,8 @@ def dmft_cycle(general_params, solver_params, advanced_params, dft_params,
         mpi.report('#'*80)
         mpi.report('Running iteration: {} / {}'.format(it, iteration_offset + n_iter))
         (sum_k, solvers,
-         observables, is_converged) = _dmft_step(sum_k, solvers, it, general_params,
-                                                 solver_params, advanced_params, dft_params, map_imp_solver, solver_type_per_imp,
+         observables, is_converged) = _dmft_step(sum_k, solvers, it, general_params, solver_params, gw_params,
+                                                 advanced_params, dft_params, map_imp_solver, solver_type_per_imp,
                                                  h_int, archive, shell_multiplicity, E_kin_dft,
                                                  observables, conv_obs, ops_chi_measure, dft_irred_kpt_indices, dft_energy, broadening,
                                                  is_converged, is_sampling=False)
@@ -592,8 +592,8 @@ def dmft_cycle(general_params, solver_params, advanced_params, dft_params,
                         iteration_offset + 1 + general_params['sampling_iterations']):
             mpi.report('#'*80)
             mpi.report('Running iteration: {} / {}'.format(it, iteration_offset+general_params['sampling_iterations']))
-            sum_k, solvers, observables, _ = _dmft_step(sum_k, solvers, it, general_params,
-                                                        solver_params, advanced_params, dft_params, map_imp_solver, solver_type_per_imp,
+            sum_k, solvers, observables, _ = _dmft_step(sum_k, solvers, it, general_params, solver_params, gw_params,
+                                                        advanced_params, dft_params, map_imp_solver, solver_type_per_imp,
                                                         h_int, archive, shell_multiplicity, E_kin_dft,
                                                         observables, conv_obs, ops_chi_measure, dft_irred_kpt_indices, dft_energy, broadening,
                                                         is_converged=True, is_sampling=True)
@@ -610,10 +610,10 @@ def dmft_cycle(general_params, solver_params, advanced_params, dft_params,
     return is_converged, sum_k
 
 
-def _dmft_step(sum_k, solvers, it, general_params,
-               solver_params, advanced_params, dft_params, map_imp_solver, solver_type_per_imp,
-               h_int, archive, shell_multiplicity, E_kin_dft,
-               observables, conv_obs, ops_chi_measure, dft_irred_kpt_indices, dft_energy, broadening,
+def _dmft_step(sum_k, solvers, it, general_params, solver_params, gw_params,
+               advanced_params, dft_params, map_imp_solver, solver_type_per_imp, h_int,
+               archive, shell_multiplicity, E_kin_dft, observables, conv_obs,
+               ops_chi_measure, dft_irred_kpt_indices, dft_energy, broadening,
                is_converged, is_sampling):
     """
     Contains the actual dmft steps when all the preparation is done
@@ -669,7 +669,7 @@ def _dmft_step(sum_k, solvers, it, general_params,
             solvers[icrsh].G0_freq << make_hermitian(solvers[icrsh].G0_freq)
         sum_k.symm_deg_gf(solvers[icrsh].G0_freq, ish=icrsh)
 
-        if ((solver_type_per_imp[icrsh] == 'cthyb' and solver_params[icrsh]['delta_interface'])
+        if ((solver_type_per_imp[icrsh] == 'cthyb' and solvers[icrsh].solver_params['delta_interface'])
                 or solver_type_per_imp[icrsh] == 'ctseg'):
             mpi.report('\n Using the delta interface for passing Delta(tau) and Hloc0 directly to the solver.')
              # prepare solver input
@@ -689,7 +689,7 @@ def _dmft_step(sum_k, solvers, it, general_params,
                     solvers[icrsh].Delta_time[name] << make_gf_from_fourier(solvers[icrsh].Delta_freq[name],
                                                                            solvers[icrsh].Delta_time.mesh, tail)
 
-                if solver_params[icrsh]['diag_delta']:
+                if solvers[icrsh].solver_params['diag_delta']:
                     for o1 in range(g0.target_shape[0]):
                         for o2 in range(g0.target_shape[0]):
                             if o1 != o2:
@@ -701,7 +701,7 @@ def _dmft_step(sum_k, solvers, it, general_params,
                     for o1 in range(spin_block.shape[0]):
                         for o2 in range(spin_block.shape[1]):
                             # check if off-diag element is larger than threshold
-                            if o1 != o2 and abs(spin_block[o1,o2]) < solver_params[icrsh]['off_diag_threshold']:
+                            if o1 != o2 and abs(spin_block[o1,o2]) < solvers[icrsh].solver_params['off_diag_threshold']:
                                 continue
                             else:
                                 # TODO: adapt for SOC calculations, which should keep the imag part
@@ -718,7 +718,7 @@ def _dmft_step(sum_k, solvers, it, general_params,
         # store DMFT input directly in last_iter
         if mpi.is_master_node():
             archive['DMFT_results/last_iter']['G0_freq_{}'.format(icrsh)] = solvers[icrsh].G0_freq
-            if solver_type_per_imp[icrsh] == 'cthyb' and solver_params[icrsh]['delta_interface']:
+            if solver_type_per_imp[icrsh] == 'cthyb' and solvers[icrsh].solver_params['delta_interface']:
                 archive['DMFT_results/last_iter']['Delta_time_{}'.format(icrsh)] = solvers[icrsh].Delta_time
 
         # setup of measurement of chi(SzSz(tau) if requested
@@ -740,10 +740,21 @@ def _dmft_step(sum_k, solvers, it, general_params,
             mpi.report('Actual time for solver: {:.2f} s'.format(timer() - start_time))
 
         # some printout of the obtained density matrices and some basic checks from the unsymmetrized solver output
-        density_shell[icrsh] = np.real(solvers[icrsh].G_freq_unsym.total_density())
-        density_tot += density_shell[icrsh]*shell_multiplicity[icrsh]
-        density_mat_unsym[icrsh] = solvers[icrsh].G_freq_unsym.density()
-        density_mat[icrsh] = solvers[icrsh].G_freq.density()
+        if ((solver_type_per_imp[icrsh] == 'cthyb' and solvers[icrsh].solver_params['measure_density_matrix']) or
+             solver_type_per_imp[icrsh] == 'ctseg' or
+            (solver_type_per_imp[icrsh] == 'hubbardI' and solvers[icrsh].solver_params['measure_density_matrix'])):
+            mpi.report('\nExtracting impurity occupations from measured density matrix.')
+            for block, occ_mat in solvers[icrsh].orbital_occupations.items():
+                density_shell[icrsh] += np.trace(occ_mat)
+            density_tot += density_shell[icrsh]*shell_multiplicity[icrsh]
+            density_mat_unsym[icrsh] = solvers[icrsh].orbital_occupations
+            density_mat[icrsh] = density_mat_unsym[icrsh].copy()
+            sum_k.symm_deg_gf(density_mat[icrsh], ish=icrsh)
+        else:
+            density_shell[icrsh] = np.real(solvers[icrsh].G_freq_unsym.total_density())
+            density_tot += density_shell[icrsh]*shell_multiplicity[icrsh]
+            density_mat_unsym[icrsh] = solvers[icrsh].G_freq_unsym.density()
+            density_mat[icrsh] = solvers[icrsh].G_freq.density()
         formatter.print_local_density(density_shell[icrsh], density_shell_pre[icrsh],
                                       density_mat_unsym[icrsh], sum_k.SO)
 
@@ -763,8 +774,8 @@ def _dmft_step(sum_k, solvers, it, general_params,
     # calculate new DC
     # for the hartree solver the DC potential will be formally set to zero as it is already present in the Sigma
     if general_params['dc'] and general_params['dc_dmft']:
-        sum_k = initial_sigma.calculate_double_counting(sum_k, density_mat,
-                                                        general_params, advanced_params,
+        sum_k = initial_sigma.calculate_double_counting(sum_k, density_mat, general_params,
+                                                        gw_params, advanced_params,
                                                         solver_type_per_imp)
 
     #The hartree solver computes the DC energy internally, set it in sum_k

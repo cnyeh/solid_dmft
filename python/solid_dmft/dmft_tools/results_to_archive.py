@@ -59,6 +59,8 @@ def _compile_information(sum_k, general_params, solver_params, solvers, map_imp_
                     write_to_h5['Sigma_moments_{}'.format(icrsh)] = solvers[icrsh].Sigma_moments
                     write_to_h5['G_moments_{}'.format(icrsh)] = solvers[icrsh].G_moments
                     write_to_h5['Sigma_Hartree_{}'.format(icrsh)] = solvers[icrsh].Sigma_Hartree
+                    write_to_h5['orbital_occupations_{}'.format(icrsh)] = solvers[icrsh].orbital_occupations
+
 
         elif solver_type_per_imp[icrsh] == 'ftps':
             write_to_h5['Delta_freq_{}'.format(icrsh)] = solvers[icrsh].Delta_freq
@@ -102,6 +104,9 @@ def _compile_information(sum_k, general_params, solver_params, solvers, map_imp_
 
         if solver_type_per_imp[icrsh] == 'ctseg':
             # if legendre was set, that we have both now!
+            write_to_h5['orbital_occupations_{}'.format(icrsh)] = solvers[icrsh].orbital_occupations
+            write_to_h5['Sigma_Hartree_{}'.format(icrsh)] = solvers[icrsh].Sigma_Hartree
+            write_to_h5['Sigma_moments_{}'.format(icrsh)] = solvers[icrsh].Sigma_moments
             if (solver_params[isolvsec]['legendre_fit']):
                 write_to_h5['G_time_orig_{}'.format(icrsh)] = solvers[icrsh].G_time_orig
                 write_to_h5['Gimp_l_{}'.format(icrsh)] = solvers[icrsh].G_l
@@ -118,7 +123,6 @@ def _compile_information(sum_k, general_params, solver_params, solvers, map_imp_
             if solver_params[isolvsec]['crm_dyson_solver']:
                 write_to_h5['G_time_dlr_{}'.format(icrsh)] = solvers[icrsh].G_time_dlr
                 write_to_h5['Sigma_dlr_{}'.format(icrsh)] = solvers[icrsh].Sigma_dlr
-                write_to_h5['Sigma_Hartree_{}'.format(icrsh)] = solvers[icrsh].Sigma_Hartree
             if general_params['h_int_type'][icrsh] == 'dyn_density_density':
                 write_to_h5['D0_time_{}'.format(icrsh)] = solvers[icrsh].triqs_solver.D0_tau
                 write_to_h5['Jperp_time_{}'.format(icrsh)] = solvers[icrsh].triqs_solver.Jperp_tau
@@ -158,7 +162,9 @@ def write(archive, sum_k, general_params, solver_params, solvers, map_imp_solver
                 if dft_var in archive:
                     archive['DMFT_results/it_{}'.format(it)].create_group(dft_var)
                     for key, value in archive[dft_var].items():
-                        archive['DMFT_results/it_{}'.format(it)][dft_var][key] = value
+                        # do only store changing elements
+                        if key not in ['symm_kpath', 'kpts_cart']:
+                            archive['DMFT_results/it_{}'.format(it)][dft_var][key] = value
             for band_elem in ['_bands.dat', '_bands.dat.gnu', '_bands.projwfc_up', '_band.dat']:
                 if os.path.isfile('./{}{}'.format(general_params['seedname'], band_elem)):
                     os.rename('./{}{}'.format(general_params['seedname'], band_elem),
