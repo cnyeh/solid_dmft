@@ -501,6 +501,8 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
         ir_kernel.check_leakage(Sigma_ir, stats='f', name="impurity self-energy", w_input=True)
 
     # Writes results to h5 archive
+    mpi.report('Writing iter {} results to h5 archives, {}/{}.h5 and {}...'.format(
+        iteration, general_params['jobname'], general_params['seedname'], gw_params['h5_file']))
     if mpi.is_master_node():
         with HDFArchive(general_params['jobname'] + '/' + general_params['seedname'] + '.h5', 'a') as ar:
             results_to_archive.write(ar, sumk, general_params, solver_params, solvers,
