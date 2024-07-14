@@ -738,22 +738,16 @@ class SolverStructure:
 
                 # fill D0_tau from Uloc_tau_2idx and Uloc_tau_2idx_prime
                 norb = Uloc_dlr.target_shape[0]
-                gf_struct = self.sum_k.gf_struct_solver_list[ish]
-                o1, o2 = 0, 0
-                for name1, n1 in gf_struct:
-                    s1 = 'up' if 'up' in name1 else 'down'
-                    for name2, n2 in gf_struct:
-                        s2 = 'up' if 'up' in name2 else 'down'
-                        if s1 == s2: # same spin interaction
-                            self.triqs_solver.D0_tau[name1, name2] << Uloc_tau_2idx_prime[o1:o1+n1, o2:o2+n2].real
-                        else: # opposite spin interaction
-                            self.triqs_solver.D0_tau[name1, name2] << Uloc_tau_2idx_prime[o1:o1 + n1, o2:o2 + n2].real
-                        o2 += n2
-                        if o2 == norb:
-                            o2 = 0
-                    o1 += n1
-                    if o1 == norb:
-                        o1 = 0
+                # same spin interaction
+                for a in range(norb):
+                    for b in range(norb):
+                        self.triqs_solver.D0_tau["up_{}".format(a), "up_{}".format(b)][0, 0] << Uloc_tau_2idx_prime[a, b].real
+                        self.triqs_solver.D0_tau["down_{}".format(a), "down_{}".format(b)][0, 0] << Uloc_tau_2idx_prime[a, b].real
+                # opposite spin interaction
+                for a in range(norb):
+                    for b in range(norb):
+                        self.triqs_solver.D0_tau["up_{}".format(a), "down_{}".format(b)][0, 0] << Uloc_tau_2idx_prime[a, b].real
+                        self.triqs_solver.D0_tau["down_{}".format(a), "up_{}".format(b)][0, 0] << Uloc_tau_2idx_prime[a, b].real
 
                 # TODO: add Jerp_Iw to the solver
 
@@ -1432,16 +1426,16 @@ class SolverStructure:
         # get occupation matrix
         self.orbital_occupations = {bl: np.zeros((bl_size,bl_size)) for bl, bl_size in self.sum_k.gf_struct_solver_list[self.icrsh]}
         for i, (block, norb) in enumerate(self.sum_k.gf_struct_solver[self.icrsh].items()):
-            self.orbital_occupations[block] = np.zeros((norb,norb))
+            self.orbital_occupations[block] = np.zeros((norb, norb))
             for iorb in range(norb):
-                self.orbital_occupations[block][iorb, iorb] = self.triqs_solver.results.densities[i]
+                self.orbital_occupations[block][iorb, iorb] = self.triqs_solver.results.densities[block][iorb]
 
         self.orbital_occupations_sumk = self.sum_k.block_structure.convert_matrix(self.orbital_occupations, ish_from=self.icrsh, space_from='solver', space_to='sumk')
         self.Sigma_Hartree = {}
         self.Sigma_Hartree_sumk = {}
         self.Sigma_moments = {}
         if mpi.is_master_node():
-            mpi.report('Evaluating static impurity self-energy analytically using interacting density from ctseg...')
+            mpi.report('\nEvaluating static impurity self-energy analytically using interacting density from ctseg...')
             mpi.report('(the results will be used in tail fitting and crm dyson solver)')
             # get density density U tensor from solver
             U_dict = extract_U_dict2(self.h_int)
@@ -1631,15 +1625,11 @@ class SolverStructure:
             mpi.report('\n!!!! WARNING !!!! tail of solver output not handled! Turn on either measure_F_tau, legendre_fit\n')
             self.Sigma_freq << inverse(self.G0_freq) - inverse(self.G_freq)
 
-
         if self.solver_params['measure_state_hist']:
             self.state_histogram = self.triqs_solver.results.state_hist
 
         if self.solver_params['measure_pert_order']:
-            self.perturbation_order_histo  = self.triqs_solver.results.pert_order_histo_Delta
-            bin_vec = np.arange(0, self.perturbation_order_histo.data.shape[0])
-            self.avg_pert_order = np.sum(bin_vec * self.perturbation_order_histo.data[:])
-            if mpi.is_master_node():
-                print(f'Average perturbation order: {self.avg_pert_order}')
+            self.perturbation_order_histo  = self.triqs_solver.results.pert_order_Delta
+            self.avg_pert_order = self.triqs_solver.results.average_order_Delta
 
         return

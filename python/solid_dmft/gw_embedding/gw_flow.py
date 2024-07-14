@@ -264,6 +264,16 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
     gw_params = mpi.bcast(gw_params)
     iteration = gw_params['it_1e']
 
+    # check if general_params[n_iw] is consistent with dlr meshes
+    mesh_f_idx = np.array([iw.index for iw in gw_params['mesh_dlr_iw_f']])
+    mesh_b_idx = np.array([iw.index for iw in gw_params['mesh_dlr_iw_b']])
+    max_idx = max(abs(mesh_f_idx[0]), abs(mesh_f_idx[-1]), abs(mesh_b_idx[0]), abs(mesh_b_idx[-1]))
+    if max_idx > general_params['n_iw']:
+        mpi.report(f"\n!!! WARNING !!!!\n"
+                   f"general_params['n_iw'] = {general_params['n_iw']} < maximum DLRImFreq index ({max_idx}). "
+                   f"solid_dmft will automatically set general_params['n_iw'] = {max_idx+1}.\n")
+        general_params['n_iw'] = max_idx + 1
+
     # if GW calculation was performed with spin never average spin channels
     if gw_params['number_of_spins'] == 2:
         general_params['magnetic'] = True
@@ -425,7 +435,8 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
 
         # some printout of the obtained density matrices and some basic checks from the unsymmetrized solver output
         if solvers[ish].solver_params['type'] == 'ctseg':
-            density_shell[ish] = np.sum(solvers[ish].triqs_solver.results.densities)
+            for blk, dm in solvers[ish].triqs_solver.results.densities.items():
+                density_shell[ish] += np.sum(np.diag(dm.real))
             density_tot += density_shell[ish]
             density_mat_unsym[ish] = solvers[ish].orbital_occupations
             density_mat[ish] = density_mat_unsym[ish]
