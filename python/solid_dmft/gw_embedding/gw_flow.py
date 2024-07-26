@@ -57,6 +57,7 @@ from solid_dmft.dmft_tools import results_to_archive
 from solid_dmft.dmft_tools.solver import SolverStructure
 from solid_dmft.dmft_tools import interaction_hamiltonian
 from solid_dmft.dmft_cycle import _extract_quantity_per_inequiv
+from solid_dmft.dmft_tools import greens_functions_mixer as gf_mixer
 from solid_dmft.gw_embedding.bdft_converter import convert_gw_output
 
 
@@ -425,8 +426,8 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
 
         # some printout of the obtained density matrices and some basic checks from the unsymmetrized solver output
         if solvers[ish].solver_params['type'] == 'ctseg':
-            for blk, dm in solvers[ish].triqs_solver.results.densities.items():
-                density_shell[ish] += np.sum(np.diag(dm.real))
+            for block, occ_mat in solvers[ish].orbital_occupations.items():
+                density_shell[ish] += np.trace(occ_mat)
             density_tot += density_shell[ish]
             density_mat_unsym[ish] = solvers[ish].orbital_occupations
             density_mat[ish] = density_mat_unsym[ish]
@@ -460,6 +461,22 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
 
                 sumk.symm_deg_gf(Sigma_dlr_iw[ish],ish=ish)
                 Sigma_dlr[ish] = make_gf_dlr(Sigma_dlr_iw[ish])
+
+            # mixing of impurity Sigma
+            if general_params['sigma_mix'] < 1.0 and iteration > 1:
+                if mpi.is_master_node():
+                    print('mixing sigma with previous iteration by factor {:.3f}\n'.format(general_params['sigma_mix']))
+                    with HDFArchive(general_params['jobname'] + '/' + general_params['seedname'] + '.h5', 'r') as ar:
+                        Sigma_dlr_prev = ar[f'DMFT_results/it_{iteration-1}'][f'Sigma_dlr_{ish}']
+                        Sigma_Hartree_prev = ar[f'DMFT_results/it_{iteration-1}'][f'Sigma_Hartree_{ish}']
+                    Sigma_dlr[ish] << (general_params['sigma_mix'] * Sigma_dlr[ish]
+                                                + (1-general_params['sigma_mix']) * Sigma_dlr_prev)
+                    for block in solvers[ish].Sigma_Hartree.keys():
+                        solvers[ish].Sigma_Hartree[block] = (general_params['sigma_mix'] * solvers[ish].Sigma_Hartree[block]
+                                                    + (1-general_params['sigma_mix']) * Sigma_Hartree_prev[block])
+                Sigma_dlr[ish] = mpi.bcast(Sigma_dlr[ish])
+                solvers[ish].Sigma_Hartree = mpi.bcast(solvers[ish].Sigma_Hartree)
+
 
             for i, (block, gf) in enumerate(Sigma_dlr[ish]):
                 # print Hartree shift
@@ -497,9 +514,11 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
 
                 if not general_params['magnetic']:
                     break
+
     if mpi.is_master_node():
         print("\nChecking impurity self-energy on the IR mesh...")
         ir_kernel.check_leakage(Sigma_ir, stats='f', name="impurity self-energy", w_input=True)
+
 
     # Writes results to h5 archive
     mpi.report('Writing iter {} results to h5 archives, {}/{}.h5 and {}.'.format(

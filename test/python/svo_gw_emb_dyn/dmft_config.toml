@@ -31,4 +31,4 @@ crm_dyson_solver = true
 crm_dlr_wmax = 0.2
 crm_dlr_eps = 1e-6
 
-measure_nn_taut = true
+measure_nn_tau = true

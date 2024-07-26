@@ -698,33 +698,16 @@ class SolverStructure:
         if self.solver_params['type'] == 'ctseg':
             # fill G0_freq from sum_k to solver
             self.triqs_solver.Delta_tau << self.Delta_time
-            # extract hartree shift per orbital for solver
-            hloc_0_bm = block_matrix_from_op(self.Hloc_0, self.sum_k.gf_struct_solver_list[self.icrsh])
-            imp_orb_levels = []
-            for block in hloc_0_bm:
-                for iorb in range(block.shape[0]):
-                    # minus sign here as the solver treats the term as chemical potential and not Hloc0
-                    imp_orb_levels.append(block[iorb,iorb].real)
-            mpi.report('impurity levels:', imp_orb_levels)
 
             if self.general_params['h_int_type'][self.icrsh] == 'dyn_density_density':
                 mpi.report('\nAdding dynamic interaction from AIMBES...')
                 # convert 4 idx tensor to two index tensor
-                ish = self.sum_k.inequiv_to_corr[self.icrsh]
-                # prepare dynamic 2 idx parts
                 Uloc_dlr = self.gw_params['Uloc_dlr'][self.icrsh]['up']
-                Uloc_dlr_2idx = Gf(mesh=Uloc_dlr.mesh, target_shape=[Uloc_dlr.target_shape[0],Uloc_dlr.target_shape[1]])
                 Uloc_dlr_2idx_prime = Gf(mesh=Uloc_dlr.mesh, target_shape=[Uloc_dlr.target_shape[0],Uloc_dlr.target_shape[1]])
 
                 for coeff in Uloc_dlr.mesh:
-                    # Transposes rotation matrix here because TRIQS has a slightly different definition
-                    if self.sum_k.use_rotations:
-                        Uloc_dlr_idx = util.transform_U_matrix(Uloc_dlr[coeff], self.sum_k.rot_mat[ish].T)
-                    else:
-                        Uloc_dlr_idx = Uloc_dlr[coeff]
-                    U, Uprime = reduce_4index_to_2index(Uloc_dlr_idx)
-                    # apply rot mat here
-                    Uloc_dlr_2idx[coeff] = U
+                    Uloc_dlr_idx = Uloc_dlr[coeff]
+                    _, Uprime = reduce_4index_to_2index(Uloc_dlr_idx)
                     Uloc_dlr_2idx_prime[coeff] = Uprime
 
                 # extract w=0 limit for Sigma_Hartree
@@ -733,21 +716,19 @@ class SolverStructure:
                 mpi.report('Screening interaction U(iw) at iw=0 (density-density only): ')
                 mpi.report(self.Uw0_prime)
                 # create full frequency objects
-                Uloc_tau_2idx = make_gf_imtime(Uloc_dlr_2idx, n_tau=self.solver_params['n_tau_bosonic'])
                 Uloc_tau_2idx_prime = make_gf_imtime(Uloc_dlr_2idx_prime, n_tau=self.solver_params['n_tau_bosonic'])
+                Uloc_tau_2idx_prime_sumk = BlockGf(name_list=['up', 'down'], block_list=[Uloc_tau_2idx_prime, Uloc_tau_2idx_prime])
+                Uloc_tau_2idx_prime_solver = self.sum_k.block_structure.convert_gf(Uloc_tau_2idx_prime_sumk,
+                                                                                   ish_from=self.icrsh,
+                                                                                   space_from='sumk',
+                                                                                   space_to='solver')
 
-                # fill D0_tau from Uloc_tau_2idx and Uloc_tau_2idx_prime
-                norb = Uloc_dlr.target_shape[0]
-                # same spin interaction
-                for a in range(norb):
-                    for b in range(norb):
-                        self.triqs_solver.D0_tau["up_{}".format(a), "up_{}".format(b)][0, 0] << Uloc_tau_2idx_prime[a, b].real
-                        self.triqs_solver.D0_tau["down_{}".format(a), "down_{}".format(b)][0, 0] << Uloc_tau_2idx_prime[a, b].real
-                # opposite spin interaction
-                for a in range(norb):
-                    for b in range(norb):
-                        self.triqs_solver.D0_tau["up_{}".format(a), "down_{}".format(b)][0, 0] << Uloc_tau_2idx_prime[a, b].real
-                        self.triqs_solver.D0_tau["down_{}".format(a), "up_{}".format(b)][0, 0] << Uloc_tau_2idx_prime[a, b].real
+                # fill D0_tau from Uloc_tau_2idx_prime
+                for iblock, Uloc_i in Uloc_tau_2idx_prime_solver:
+                    for jblock, Uloc_j in Uloc_tau_2idx_prime_solver:
+                        # same spin and opposite spin interaction have same interaction for dynamic part
+                        # Hund's rule does not apply here
+                        self.triqs_solver.D0_tau[iblock, jblock] << Uloc_tau_2idx_prime_solver[iblock].real
 
                 # TODO: add Jerp_Iw to the solver
 
@@ -765,7 +746,6 @@ class SolverStructure:
                     archive['DMFT_input/solver/it_-1'][f'triqs_solver_params_{self.icrsh}'] = prep_params_for_h5(self.triqs_solver_params)
                     archive['DMFT_input/solver/it_-1']['mpi_size'] = mpi.size
                     if self.general_params['h_int_type'][self.icrsh] == 'dyn_density_density':
-                        archive['DMFT_input/solver/it_-1'][f'Uloc_dlr_2idx_{self.icrsh}'] = Uloc_dlr_2idx
                         archive['DMFT_input/solver/it_-1'][f'Uloc_dlr_2idx_prime_{self.icrsh}'] = Uloc_dlr_2idx_prime
             mpi.barrier()
 
@@ -997,7 +977,8 @@ class SolverStructure:
 
         # Separately stores all params that go into solve() call of solver
         self.triqs_solver_params = {}
-        keys_to_pass = ('length_cycle', 'max_time', 'measure_state_hist', 'measure_nn_tau')
+        keys_to_pass = ('length_cycle', 'max_time', 'measure_state_hist', 'measure_nn_tau', 'measure_G_tau',
+                        'measure_pert_order',)
         for key in keys_to_pass:
             self.triqs_solver_params[key] = self.solver_params[key]
 
@@ -1005,10 +986,6 @@ class SolverStructure:
         self.triqs_solver_params['n_cycles'] = int(self.solver_params['n_cycles_tot'] / mpi.size)
         # cast warmup cycles to int in case given in scientific notation
         self.triqs_solver_params['n_warmup_cycles'] = int(self.solver_params['n_warmup_cycles'])
-
-        # Rename parameters that are different in ctseg than cthyb
-        self.triqs_solver_params['measure_G_tau'] = self.solver_params['measure_G_tau']
-        self.triqs_solver_params['measure_pert_order'] = self.solver_params['measure_pert_order']
 
         # Makes sure measure_gw is true if improved estimators are used
         if self.solver_params['improved_estimator']:
@@ -1425,8 +1402,8 @@ class SolverStructure:
 
         # get occupation matrix
         self.orbital_occupations = {bl: np.zeros((bl_size,bl_size)) for bl, bl_size in self.sum_k.gf_struct_solver_list[self.icrsh]}
-        for i, (block, norb) in enumerate(self.sum_k.gf_struct_solver[self.icrsh].items()):
-            self.orbital_occupations[block] = np.zeros((norb, norb))
+        for block, norb in self.sum_k.gf_struct_solver[self.icrsh].items():
+            self.orbital_occupations[block] = np.zeros((norb,norb))
             for iorb in range(norb):
                 self.orbital_occupations[block][iorb, iorb] = self.triqs_solver.results.densities[block][iorb]
 
@@ -1624,6 +1601,7 @@ class SolverStructure:
         else:
             mpi.report('\n!!!! WARNING !!!! tail of solver output not handled! Turn on either measure_F_tau, legendre_fit\n')
             self.Sigma_freq << inverse(self.G0_freq) - inverse(self.G_freq)
+
 
         if self.solver_params['measure_state_hist']:
             self.state_histogram = self.triqs_solver.results.state_hist
