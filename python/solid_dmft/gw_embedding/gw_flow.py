@@ -488,9 +488,12 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
                     tail, err = gf.fit_hermitian_tail()
                     solvers[ish].Sigma_Hartree[block] = tail[0]
 
+            sumk.symm_deg_gf(solvers[ish].Sigma_Hartree, ish=ish)
+
             if solvers[ish].solver_params['type'] in ('cthyb', 'ctseg') and solvers[ish].solver_params['crm_dyson_solver']:
                 Sigma_dlr[ish] = make_gf_dlr(solvers[ish].Sigma_dlr)
             else:
+                sumk.symm_deg_gf(solvers[ish].Sigma_freq, ish=ish)
                 Sigma_dlr_iw[ish] = sumk.block_structure.create_gf(ish=ish,
                                                                    gf_function=Gf,
                                                                    space='solver',
@@ -504,19 +507,15 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
 
             # mixing of impurity Sigma
             if general_params['sigma_mix'] < 1.0 and iteration > 1:
-                if mpi.is_master_node():
-                    print('mixing sigma with previous iteration by factor {:.3f}\n'.format(general_params['sigma_mix']))
-                    with HDFArchive(general_params['jobname'] + '/' + general_params['seedname'] + '.h5', 'r') as ar:
-                        Sigma_dlr_prev = ar[f'DMFT_results/it_{iteration-1}'][f'Sigma_dlr_{ish}']
-                        Sigma_Hartree_prev = ar[f'DMFT_results/it_{iteration-1}'][f'Sigma_Hartree_{ish}']
-                    Sigma_dlr[ish] << (general_params['sigma_mix'] * Sigma_dlr[ish]
-                                                + (1-general_params['sigma_mix']) * Sigma_dlr_prev)
-                    for block in solvers[ish].Sigma_Hartree.keys():
-                        solvers[ish].Sigma_Hartree[block] = (general_params['sigma_mix'] * solvers[ish].Sigma_Hartree[block]
-                                                    + (1-general_params['sigma_mix']) * Sigma_Hartree_prev[block])
-                Sigma_dlr[ish] = mpi.bcast(Sigma_dlr[ish])
-                solvers[ish].Sigma_Hartree = mpi.bcast(solvers[ish].Sigma_Hartree)
-
+                print('mixing sigma with previous iteration by factor {:.3f}\n'.format(general_params['sigma_mix']))
+                with HDFArchive(general_params['jobname'] + '/' + general_params['seedname'] + '.h5', 'r') as ar:
+                    Sigma_dlr_prev = ar[f'DMFT_results/it_{iteration-1}'][f'Sigma_dlr_{ish}']
+                    Sigma_Hartree_prev = ar[f'DMFT_results/it_{iteration-1}'][f'Sigma_Hartree_{ish}']
+                Sigma_dlr[ish] << (general_params['sigma_mix'] * Sigma_dlr[ish]
+                                            + (1-general_params['sigma_mix']) * Sigma_dlr_prev)
+                for block in solvers[ish].Sigma_Hartree.keys():
+                    solvers[ish].Sigma_Hartree[block] = (general_params['sigma_mix'] * solvers[ish].Sigma_Hartree[block]
+                                                + (1-general_params['sigma_mix']) * Sigma_Hartree_prev[block])
 
             for i, (block, gf) in enumerate(Sigma_dlr[ish]):
                 # print Hartree shift

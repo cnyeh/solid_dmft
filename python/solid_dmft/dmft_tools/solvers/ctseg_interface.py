@@ -144,7 +144,7 @@ class CTSEGInterface(AbstractDMFTSolver):
         mpi.barrier()
 
         # turn of problematic move in ctseg until fixed!
-        self.triqs_solver_params['move_move_segment'] = False
+        self.triqs_solver_params['move_move_segment'] = True
         # Solve the impurity problem for icrsh shell
         # *************************************
         self.triqs_solver.solve(h_int=self.h_int, h_loc0=self.Hloc_0, **self.triqs_solver_params)
@@ -288,9 +288,11 @@ class CTSEGInterface(AbstractDMFTSolver):
                 self.F_freq << 0.0
                 self.F_time = self.G_time.copy()
                 self.F_time << self.triqs_solver.results.F_tau
+                self.sum_k.symm_deg_gf(self.F_time, ish=self.icrsh)
                 F_known_moments = make_zero_tail(self.F_freq, n_moments=1)
                 for i, bl in enumerate(self.F_freq.indices):
                     self.F_freq[bl] << Fourier(self.triqs_solver.results.F_tau[bl], F_known_moments[i])
+                self.sum_k.symm_deg_gf(self.F_freq, ish=self.icrsh)
 
                 for block, fw in self.F_freq:
                     for iw in fw.mesh:
@@ -317,9 +319,11 @@ class CTSEGInterface(AbstractDMFTSolver):
             self.F_freq << 0.0
             self.F_time = self.G_time.copy()
             self.F_time << self.triqs_solver.results.F_tau
+            self.sum_k.symm_deg_gf(self.F_time, ish=self.icrsh)
             F_known_moments = make_zero_tail(self.F_freq, n_moments=1)
             for i, bl in enumerate(self.F_freq.indices):
                 self.F_freq[bl] << Fourier(self.triqs_solver.results.F_tau[bl], F_known_moments[i])
+            self.sum_k.symm_deg_gf(self.F_freq, ish=self.icrsh)
 
             for block, fw in self.F_freq:
                 for iw in fw.mesh:
