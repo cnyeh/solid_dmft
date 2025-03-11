@@ -449,6 +449,61 @@ class IAFT(object):
                   "coeff_last = {}, coeff_first = {}".format(leakage, coeff_last, coeff_first))
         sys.stdout.flush()
 
+    def check_leakage_phsym(self, Ot, stats: str, name: str = "", w_input: bool = False):
+        """
+        Check decay of the IR coefficients to assess the quality of IR basis for the beta and lambda.
+        The coefficients should decay exponentially, and the leakage is defined as:
+            leakage = the smallest coefficients / the largest coefficients
+        :param Ot:
+        :param stats:
+        :param name:
+        :param w_input:
+        :return:
+        """
+        if stats != 'b':
+            raise ValueError("FT w/ particle-hole symmetry only support bosonic correlation functions")
+
+        if w_input:
+            Ot_ = self.w_to_tau_phsym(Ot, stats)
+            self.check_leakage_phsym(Ot_, stats, name, w_input=False)
+            return
+
+        if stats not in self.statisics:
+            raise ValueError("Unknown statistics '{}'. "
+                             "Acceptable options are 'f' for fermion and 'b' for bosons.".format(stats))
+
+        nw_half = self.nw_b // 2
+        nts = self.nt_b
+        nt_half = self.nt_b // 2
+        Tlt = self.Tlt_bb
+        if nt_half != Ot.shape[0]:
+            raise ValueError("Inconsistency between nts_half = {} and Ot.shape[0] = {}".format(nt_half, Ot.shape[0]))
+
+        # coeff_first
+        Tl0_t_pos = np.zeros(nt_half, dtype=complex)
+        for it in range(nt_half):
+            imt = nts-it-1
+            Tl0_t_pos[it] = Tlt[0,it] if it == imt else Tlt[0,it] + Tlt[0,imt]
+        O_l0_i = np.einsum('t,ti->i', Tl0_t_pos, Ot.reshape(nt_half, -1))
+        coeff_first = np.max(np.abs(O_l0_i))
+
+        # coeff_last
+        Tlm2_t_pos = np.zeros((2,nt_half), dtype=complex)
+        nl = Tlt.shape[0]
+        for it in range(nt_half):
+            imt = nts-it-1
+            Tlm2_t_pos[0,it] = Tlt[nl-2,it] if it==imt else Tlt[nl-2,it] + Tlt[nl-2,imt]
+            Tlm2_t_pos[1,it] = Tlt[nl-1,it] if it==imt else Tlt[nl-1,it] + Tlt[nl-1,imt]
+        O_lm2_t = np.einsum('lt,ti->li', Tlm2_t_pos, Ot.reshape(nt_half,-1))
+        coeff_last = np.max(np.abs(O_lm2_t))
+
+        leakage = coeff_last/coeff_first
+        print("IAFT leakage of {}: {}".format(name, leakage))
+        if leakage >= 1e-8:
+            print("[WARNING] check_leakage_phsym: coeff_last/coeff_first = {} >= 1e-8; "
+                  "coeff_last = {}, coeff_first = {}".format(leakage, coeff_last, coeff_first))
+        sys.stdout.flush()
+
 
 if __name__ == '__main__':
     # Initialize IAFT object for given inverse temperature, lambda and precision

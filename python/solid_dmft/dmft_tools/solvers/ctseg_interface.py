@@ -1,7 +1,9 @@
 import numpy as np
 from itertools import product
 
-from triqs.gf import MeshDLRImFreq, Gf, BlockGf, make_gf_imfreq, make_hermitian, make_gf_dlr, fit_gf_dlr, make_gf_dlr_imtime, make_gf_imtime
+from triqs.gf import (MeshDLRImFreq, Gf, BlockGf, make_gf_imfreq, make_hermitian,
+                      make_gf_dlr, fit_gf_dlr, make_gf_dlr_imtime, make_gf_imtime,
+                      make_gf_dlr_imfreq, Idx)
 from triqs.gf.tools import inverse, make_zero_tail
 from triqs.gf.descriptors import Fourier
 from triqs.operators.util.U_matrix import reduce_4index_to_2index
@@ -143,8 +145,6 @@ class CTSEGInterface(AbstractDMFTSolver):
                     archive['DMFT_input/solver/it_-1'][f'Uloc_dlr_2idx_prime_{self.icrsh}'] = Uloc_dlr_2idx_prime
         mpi.barrier()
 
-        # turn of problematic move in ctseg until fixed!
-        self.triqs_solver_params['move_move_segment'] = True
         # Solve the impurity problem for icrsh shell
         # *************************************
         self.triqs_solver.solve(h_int=self.h_int, h_loc0=self.Hloc_0, **self.triqs_solver_params)
@@ -157,9 +157,6 @@ class CTSEGInterface(AbstractDMFTSolver):
         r"""
         Organize G_freq, G_time, Sigma_freq and G_l from ctseg solver
         """
-        from triqs.operators.util.extractors import extract_U_dict2, dict_to_matrix
-        from solid_dmft.postprocessing.eval_U_cRPA_RESPACK import construct_Uijkl
-
         def set_Gs_from_G_l():
             if self.solver_params['improved_estimator'] and mpi.is_master_node():
                 print(
@@ -204,29 +201,8 @@ class CTSEGInterface(AbstractDMFTSolver):
         if mpi.is_master_node():
             mpi.report('Evaluating static impurity self-energy analytically using interacting density from ctseg...\n'
                        '(results will be used in the subsequent tail fitting or the crm dyson solver)')
-            # get density density U tensor from solver
-            U_dict = extract_U_dict2(self.h_int)
-            # print("sum_k is" + self.sum_k.__repr__())
-            norb = common.get_n_orbitals(self.sum_k)
-            norb = norb[self.icrsh]['up']
-            U_dd = dict_to_matrix(U_dict, gf_struct=self.sum_k.gf_struct_solver_list[self.icrsh])
-            # extract Uijij (inter- and intra-orbital Coulomb) and Uijji (Hund's coupling) terms
-            # a) For static impurity problem, Us are the static screened interactions
-            # b) For dynamic impurity problem, Us are the bare interactions
-            Uijij = U_dd[0:norb, norb : 2 * norb]
-            Uijji = Uijij - U_dd[0:norb, 0:norb]
-            # and construct full Uijkl tensor for static interaction
-            Uijkl = construct_Uijkl(Uijij, Uijji)
-
-            if self.general_params['h_int_type'][self.icrsh] == 'dyn_density_density':
-                # For dynamic impurity problems, separate Us are needed for the Hartree and exchange self-energy
-                # a) Hartree term is evaluated using the screened interactions at w=0
-                # b) Exchange term is evaluated using the bare interactions
-                Uijij += self.Uw0_prime
-                Uijji[:, :] = 0.0
-                Uw0_ijkl = construct_Uijkl(Uijij, Uijji)
-            else:
-                Uw0_ijkl = Uijkl
+            Uijkl, Uw0_ijkl = self.extract_Uijkl_from_h_int(return_w0=True)
+            norb = Uijkl.shape[0]
 
             # now calculated Hartree shift via
             # \Sigma^0_{\alpha \beta} = \sum_{i j} n_{i j} \left( 2 Uw0_{\alpha i \beta j} - U_{\alpha i j \beta} \right)
@@ -401,6 +377,9 @@ class CTSEGInterface(AbstractDMFTSolver):
             mpi.report('\n!!!! WARNING !!!! tail of solver output not handled! Turn on either measure_F_tau, legendre_fit\n')
             self.Sigma_freq << inverse(self.G0_freq) - inverse(self.G_freq)
 
+        if self.solver_params.get('measure_nn_tau') and self.general_params['h_int_type'][self.icrsh] == 'dyn_density_density':
+            self.extract_pi_impurity()
+
         if self.solver_params['measure_state_hist']:
             self.state_histogram = self.triqs_solver.results.state_hist
 
@@ -409,3 +388,141 @@ class CTSEGInterface(AbstractDMFTSolver):
             self.avg_pert_order = self.triqs_solver.results.average_order_Delta
 
         return
+
+    def extract_Uijkl_from_h_int(self, return_w0=False):
+        from triqs.operators.util.extractors import extract_U_dict2, dict_to_matrix
+        from solid_dmft.postprocessing.eval_U_cRPA_RESPACK import construct_Uijkl
+
+        # get density density U tensor from solver
+        U_dict = extract_U_dict2(self.h_int)
+        norb = common.get_n_orbitals(self.sum_k)
+        norb = norb[self.icrsh]['up']
+        U_dd = dict_to_matrix(U_dict, gf_struct=self.sum_k.gf_struct_solver_list[self.icrsh])
+        # extract Uijij (inter- and intra-orbital Coulomb) and Uijji (Hund's coupling) terms
+        # a) For static impurity problem, Us are the static screened interactions
+        # b) For dynamic impurity problem, Us are the bare interactions
+        Uijij = U_dd[0:norb, norb: 2 * norb]
+        Uijji = Uijij - U_dd[0:norb, 0:norb]
+        # and construct full Uijkl tensor for static interaction
+        Uijkl = construct_Uijkl(Uijij, Uijji)
+
+        if not return_w0:
+            return Uijkl
+
+        if self.general_params['h_int_type'][self.icrsh] == 'dyn_density_density':
+            # For dynamic impurity problems, separate Us are needed for the Hartree and exchange self-energy
+            # a) Hartree term is evaluated using the screened interactions at w=0
+            # b) Exchange term is evaluated using the bare interactions
+            Uijij += self.Uw0_prime
+            Uijji[:, :] = 0.0
+            Uw0_ijkl = construct_Uijkl(Uijij, Uijji)
+        else:
+            Uw0_ijkl = Uijkl
+
+        return Uijkl, Uw0_ijkl
+
+    def extract_pi_impurity(self):
+        # post-processing steps for impurity polarizability
+        mpi.report('\nPost-processing the density-density susceptibility to obtain the impurity polarizability.')
+
+        nn_tau = self.triqs_solver.results.nn_tau
+        ish = self.sum_k.inequiv_to_corr[self.icrsh]
+        norb = common.get_n_orbitals(self.sum_k)[ish]['up']
+        norb2 = norb * norb
+        gf_struct = self.sum_k.gf_struct_solver_list[ish]
+
+        nn_tau_dd = Gf(mesh=nn_tau['up_0', 'up_0'].mesh, target_shape=[norb, norb])
+        o1 = 0
+        for name1, n1 in gf_struct:
+            o2 = 0
+            for name2, n2 in gf_struct:
+                assert n1 == n2
+                nn_tau_dd.data[:, o1:(o1+n1), o2:(o2+n2)] += nn_tau[name1, name2].data[:]
+                o2 = (o2 + n2) % norb
+            o1 = (o1 + n1) % norb
+
+        # density for the constant part of chi
+        dens_from_nn = np.zeros(norb, dtype=float)
+        o1 = 0
+        for name, n1 in gf_struct:
+            for i in range(n1):
+                dens_from_nn[o1 + i] += nn_tau[name, name](Idx(0))[i, i].real
+            o1 = (o1 + n1) % norb
+
+        # symmetrization
+        mpi.report('Symmetrizing the density-density susceptibility: nn(t) = nn(beta-t) and nn(t).imag = 0.0 ')
+        n_tau = self.solver_params['n_tau_bosonic']
+        ntau_half = n_tau // 2
+        for i, j in product(range(norb), repeat=2):
+            if i >= j:
+                # remove the constant part
+                nn_tau_dd[i,j].data[:] -= (dens_from_nn[i] * dens_from_nn[j])
+                # symmetrization
+                nn_tau_dd[i,j].data.imag = 0.0
+                nn_tau_pos = nn_tau_dd[i,j].data[:ntau_half]
+                nn_tau_dd[i,j].data[(ntau_half+1):] = nn_tau_pos[::-1]
+                if i != j:
+                    nn_tau_dd[j,i] << nn_tau_dd[i,j]
+
+
+        # TODO orbital symmetrization
+
+
+        # from density-density basis to product basis
+        nn_tau_pb = Gf(mesh=nn_tau['up_0', 'up_0'].mesh, target_shape=[norb2, norb2])
+        for i, j in product(range(norb), repeat=2):
+            if i >= j:
+                nn_tau_pb[i*norb+i, j*norb+j] << nn_tau_dd[i,j]
+                if i != j:
+                    nn_tau_pb[j*norb+j, i*norb+i] << nn_tau_pb[i*norb+i, j*norb+j]
+
+        self.nn_dlr = fit_gf_dlr(nn_tau_pb, w_max=self.general_params['dlr_wmax'],
+                                 eps=self.general_params['dlr_eps'], symmetrize=True)
+        nn_iw_pb = make_gf_dlr_imfreq(self.nn_dlr)
+
+        # Screened Coulomb interaction in the product basis set
+        Vloc = self.gw_params['Vloc'][self.icrsh]['up']
+        Uloc_iw_dlr = make_gf_dlr_imfreq(self.gw_params['Uloc_dlr'][self.icrsh]['up'])
+        Uloc_iw_pb = Gf(mesh=Uloc_iw_dlr.mesh, target_shape=[norb2, norb2])
+        # Uloc_iw_dlr and Vloc follow triqs notation for Coulomb interactions
+        for i, j in product(range(norb), repeat=2):
+            if i == j:
+                # intra-orbital density-density term
+                Uloc_iw_pb[i*norb+i, i*norb+i] << Uloc_iw_dlr[i, i, i, i]
+                Uloc_iw_pb[i*norb+i, i*norb+i].data[:] += Vloc[i, i, i, i]
+            if i > j:
+                # inter-orbital density-density term
+                Uloc_iw_pb[i*norb+i, j*norb+j] << Uloc_iw_dlr[i, j, i, j]
+                Uloc_iw_pb[i*norb+i, j*norb+j].data[:] += Vloc[i, j, i, j]
+                Uloc_iw_pb[j*norb+j, i*norb+i] << Uloc_iw_pb[i*norb+i, j*norb+j]
+                # Hund's J
+                Uloc_iw_pb[i*norb+j, j*norb+i] << Uloc_iw_dlr[i, j, j, i]
+                Uloc_iw_pb[i*norb+j, j*norb+i].data[:] += Vloc[i, j, j, i]
+                Uloc_iw_pb[j*norb+i, i*norb+j] << Uloc_iw_pb[i*norb+j, j*norb+i]
+
+        # Dyson equation: Pi(w) = [U(w)*Chi(w) - I]^-1 * Chi(w)
+        mpi.report("Dyson equation for impurity polarizability")
+        pi_iw_pb = Gf(mesh=nn_iw_pb.mesh, target_shape=nn_iw_pb.target_shape)
+        ones = np.eye(norb2, dtype=complex)
+        for iwn in nn_iw_pb.mesh:
+            denom = Uloc_iw_pb[iwn] @ nn_iw_pb[iwn] - ones
+            pi_iw_pb[iwn] = np.linalg.inv(denom) @ nn_iw_pb[iwn]
+        self.Pi_dlr = make_gf_dlr(pi_iw_pb)
+
+        # Screened interaction W(w) = U(w) - U(w) * Chi(w) * U(w)
+        W_iw_pb = Gf(mesh=nn_iw_pb.mesh, target_shape=nn_iw_pb.target_shape)
+        for iwn in nn_iw_pb.mesh:
+            W_iw_pb[iwn] = Uloc_iw_pb[iwn] - Uloc_iw_pb[iwn] @ nn_iw_pb[iwn] @ Uloc_iw_pb[iwn]
+
+        for i, j in product(range(norb), repeat=2):
+            if i == j:
+                # intra-orbital density-density term
+                W_iw_pb[i*norb+i, i*norb+i].data[:] -= Vloc[i, i, i, i]
+            if i > j:
+                # inter-orbital density-density term
+                W_iw_pb[i*norb+i, j*norb+j].data[:] -= Vloc[i, j, i, j]
+                W_iw_pb[j*norb+j, i*norb+i] << W_iw_pb[i*norb+i, j*norb+j]
+                # Hund's J
+                W_iw_pb[i*norb+j, j*norb+i].data[:] -= Vloc[i, j, j, i]
+                W_iw_pb[j*norb+i, i*norb+j] << W_iw_pb[i*norb+j, j*norb+i]
+        self.W_dlr = make_gf_dlr(W_iw_pb)

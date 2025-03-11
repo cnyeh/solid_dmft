@@ -351,15 +351,19 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
     if mpi.is_master_node():
         Sigma_dlr = [None] * sumk.n_inequiv_shells
         Sigma_dlr_iw = [None] * sumk.n_inequiv_shells
-        ir_mesh_idx = ir_kernel.wn_mesh(stats='f',ir_notation=False)
+        ir_mesh_idx = ir_kernel.wn_mesh(stats='f', ir_notation=False)
         ir_mesh = (2*ir_mesh_idx+1)*np.pi/gw_params['beta']
-        Sigma_ir = np.zeros((len(ir_mesh_idx),
-                             gw_params['number_of_spins'],
-                             sumk.n_inequiv_shells,max(gw_params['n_orb']),max(gw_params['n_orb'])),
+        norb_max = max(gw_params['n_orb'])
+        Sigma_ir = np.zeros((len(ir_mesh_idx), gw_params['number_of_spins'],
+                             sumk.n_inequiv_shells, norb_max, norb_max),
                             dtype=complex)
-        Vhf_imp_sIab = np.zeros((gw_params['number_of_spins'],
-                                 sumk.n_inequiv_shells,
-                                 max(gw_params['n_orb']),max(gw_params['n_orb'])),dtype=complex)
+        Vhf_imp_sIab = np.zeros((gw_params['number_of_spins'], sumk.n_inequiv_shells,
+                                 norb_max, norb_max), dtype=complex)
+        # bosonic quantities
+        ir_mesh_b_idx = ir_kernel.wn_mesh(stats='b', ir_notation=False)
+        ir_nw_b_half = len(ir_mesh_b_idx) // 2
+        Pi_ir = np.zeros((ir_nw_b_half+1, norb_max*norb_max, norb_max*norb_max), dtype=complex)
+        W_ir = np.zeros((ir_nw_b_half+1, norb_max*norb_max, norb_max*norb_max), dtype=complex)
 
     for icrsh in range(sumk.n_inequiv_shells):
         # Construct the Solver instances
@@ -554,9 +558,22 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
                 if not general_params['magnetic']:
                     break
 
+            # post-processing for impurity polarizability
+            if solvers[ish].triqs_solver_params.get('measure_nn_tau'):
+                # store Pi, nn, and W on IR mesh
+                iw_mesh_b = MeshImFreq(beta=general_params['beta'], statistic='Boson', n_iw=ir_mesh_b_idx[-1])
+                ir_nw_b_half = len(ir_mesh_b_idx)//2
+                for iw_idx in range(ir_nw_b_half+1):
+                    wn = ir_mesh_b_idx[ir_nw_b_half+iw_idx]
+                    Pi_ir[iw_idx] = solvers[ish].Pi_dlr(iw_mesh_b(wn))
+                    W_ir[iw_idx] = solvers[ish].W_dlr(iw_mesh_b(wn))
+
+
     if mpi.is_master_node():
         print("\nChecking impurity self-energy on the IR mesh...")
         ir_kernel.check_leakage(Sigma_ir, stats='f', name="impurity self-energy", w_input=True)
+        if solvers[0].triqs_solver_params.get('measure_nn_tau'):
+            ir_kernel.check_leakage_phsym(Pi_ir, stats='b', name="impurity polarizability", w_input=True)
 
     # Writes results to h5 archive
     mpi.report('Writing iter {} results to h5 archives {} and {}.'.format(iteration, archive, gw_params['h5_file']))
@@ -576,6 +593,8 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
         with HDFArchive(gw_params['h5_file'], 'a') as ar:
             ar[f'downfold_1e/iter{iteration}']['Sigma_imp_wsIab'] = Sigma_ir
             ar[f'downfold_1e/iter{iteration}']['Vhf_imp_sIab'] = Vhf_imp_sIab
+            ar[f'downfold_2e/iter{iteration}']['Pi_imp_wabcd'] = Pi_ir.reshape(-1, norb_max, norb_max, norb_max, norb_max)
+            ar[f'downfold_2e/iter{iteration}']['W_imp_wabcd'] = W_ir.reshape(-1, norb_max, norb_max, norb_max, norb_max)
 
     mpi.report('*** iteration finished ***')
     mpi.report('#'*80)
