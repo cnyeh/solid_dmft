@@ -490,14 +490,16 @@ def convert_gw_output(job_h5, gw_h5, dlr_wmax=None, dlr_eps=None,
                 Uloc_ir[ir_w, or1, or2, or3, or4] = Uloc_ir_jk[ir_w, or1, or3, or2, or4]
 
         Vhf_dc_sIab = ar[f'downfold_1e/iter{it_1e}']['Vhf_dc_sIab'][0, 0]
-        Vhf_sIab = ar[f'downfold_1e/iter{it_1e}']['Vhf_gw_sIab'][0, 0]
+        if 'Vhf_gw_sIab' in ar[f'downfold_1e/iter{it_1e}']:
+            Vhf_sIab = ar[f'downfold_1e/iter{it_1e}']['Vhf_gw_sIab'][0, 0]
+        else:
+            Vhf_sIab = np.zeros(Vhf_dc_sIab.shape, dtype=complex)
 
         if 'Vcorr_gw_sIab' in ar[f'downfold_1e/iter{it_1e}']:
             mpi.report('Found Vcorr_sIab in the bdft checkpoint file, '
                        'i.e. Embedding on top of an effective QP Hamiltonian.')
             qp_emb = True
         else:
-            Sigma_wsIab = ar[f'downfold_1e/iter{it_1e}']['Sigma_gw_wsIab']
             qp_emb = False
         mpi.report("")
 
@@ -527,6 +529,8 @@ def convert_gw_output(job_h5, gw_h5, dlr_wmax=None, dlr_eps=None,
         raise ValueError("calc_type must be either \'analytic\' or \'tail_fit\'.")
 
     if delta_calc_type == "analytic":
+        raise ValueError("delta_calc_type = analytic is deprecated. "
+                         "Please set delta_calc_type == tail_fit.")
         Hloc0, delta_wsIab = read_t_and_delta(gw_h5, it_1e)
         ir_imp_kernel = ir_kernel
     elif delta_calc_type == "tail_fit":
@@ -578,12 +582,6 @@ def convert_gw_output(job_h5, gw_h5, dlr_wmax=None, dlr_eps=None,
         Gloc_dlr = BlockGf(name_list=['up', 'down'], block_list=[temp, temp], make_copies=True)
         Gloc_dlr_list.append(Gloc_dlr)
 
-        # since Sigma can have a static shift we return DLR Imfreq mesh
-        if not qp_emb:
-            temp = _get_dlr_from_IR(Sigma_wsIab[:, 0, ish, :, :]*conv_fac, ir_kernel, gw_data['mesh_dlr_iw_f'], dim=2)
-            Sigma_dlr = BlockGf(name_list=['up', 'down'], block_list=[temp, temp], make_copies=True)
-            Sigma_dlr_list.append(Sigma_dlr)
-
         temp = _get_dlr_from_IR(Sigma_dc_wsIab[:, 0, ish, :, :]*conv_fac, ir_kernel, gw_data['mesh_dlr_iw_f'], dim=2)
         Sigma_DC_dlr = BlockGf(name_list=['up', 'down'], block_list=[temp, temp], make_copies=True)
         Sigma_DC_dlr_list.append(Sigma_DC_dlr)
@@ -591,7 +589,6 @@ def convert_gw_output(job_h5, gw_h5, dlr_wmax=None, dlr_eps=None,
     gw_data['G0_dlr'] = G0_dlr_list
     gw_data['delta_dlr'] = delta_dlr_list
     gw_data['Gloc_dlr'] = Gloc_dlr_list
-    gw_data['Sigma_imp_dlr'] = Sigma_dlr_list
     gw_data['Sigma_imp_DC_dlr'] = Sigma_DC_dlr_list
     gw_data['Uloc_dlr'] = U_dlr_list
     gw_data['Vloc'] = V_list

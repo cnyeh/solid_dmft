@@ -290,6 +290,8 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
                    mesh=sumk_mesh, use_dft_blocks=False, h_field=general_params['h_field'])
     sumk.chemical_potential = gw_params['mu_emb']
     sumk.dc_imp = gw_params['Vhf_dc']
+    # overwrite 'use_rotations' using gw_params
+    sumk.use_rotations = gw_params['use_rot']
 
     for key in ['h_int_type', 'dc_type', 'enforce_off_diag']:
         general_params = _extract_quantity_per_inequiv(key, sumk.n_inequiv_shells, general_params)
@@ -510,11 +512,23 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
                 Sigma_dlr[ish] = make_gf_dlr(Sigma_dlr_iw[ish])
 
             # mixing of impurity Sigma
-            if general_params['sigma_mix'] < 1.0 and iteration > 1:
-                print('mixing sigma with previous iteration by factor {:.3f}\n'.format(general_params['sigma_mix']))
-                with HDFArchive(general_params['jobname'] + '/' + general_params['seedname'] + '.h5', 'r') as ar:
-                    Sigma_dlr_prev = ar[f'DMFT_results/it_{iteration-1}'][f'Sigma_dlr_{ish}']
-                    Sigma_Hartree_prev = ar[f'DMFT_results/it_{iteration-1}'][f'Sigma_Hartree_{ish}']
+            if general_params['sigma_mix'] < 1.0:
+                with HDFArchive(archive, 'a') as ar:
+                    dmft_out_grp = ar['DMFT_results']
+                    if f'it_{iteration-1}' in dmft_out_grp.keys():
+                        print('mixing sigma with previous iteration by factor {:.3f}\n'.format(
+                            general_params['sigma_mix']))
+                        Sigma_dlr_prev = dmft_out_grp[f'it_{iteration-1}'][f'Sigma_dlr_{ish}']
+                        Sigma_Hartree_prev = dmft_out_grp[f'it_{iteration-1}'][f'Sigma_Hartree_{ish}']
+                    else:
+                        print('no previous impurity self-energy found -- mixing sigma with the double counting by factor {:.3f}\n'.format(
+                            general_params['sigma_mix']))
+                        Sigma_dlr_prev = sumk.block_structure.convert_gf(
+                            gw_params['Sigma_imp_DC_dlr'][ish], ish_from=ish,
+                            space_from='sumk', space_to='solver')
+                        Sigma_Hartree_prev = sumk.block_structure.convert_matrix(
+                            gw_params['Vhf_dc'][ish], ish_from=ish,
+                            space_from='sumk', space_to='solver')
                 Sigma_dlr[ish] << (general_params['sigma_mix'] * Sigma_dlr[ish]
                                             + (1-general_params['sigma_mix']) * Sigma_dlr_prev)
                 for block in solvers[ish].Sigma_Hartree.keys():
@@ -567,7 +581,7 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
                     wn = ir_mesh_b_idx[ir_nw_b_half+iw_idx]
                     Pi_ir[iw_idx] = solvers[ish].Pi_dlr(iw_mesh_b(wn))
                     W_ir[iw_idx] = solvers[ish].W_dlr(iw_mesh_b(wn))
-
+    mpi.barrier()
 
     if mpi.is_master_node():
         print("\nChecking impurity self-energy on the IR mesh...")
@@ -593,8 +607,9 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
         with HDFArchive(gw_params['h5_file'], 'a') as ar:
             ar[f'downfold_1e/iter{iteration}']['Sigma_imp_wsIab'] = Sigma_ir
             ar[f'downfold_1e/iter{iteration}']['Vhf_imp_sIab'] = Vhf_imp_sIab
-            ar[f'downfold_2e/iter{iteration}']['Pi_imp_wabcd'] = Pi_ir.reshape(-1, norb_max, norb_max, norb_max, norb_max)
-            ar[f'downfold_2e/iter{iteration}']['W_imp_wabcd'] = W_ir.reshape(-1, norb_max, norb_max, norb_max, norb_max)
+            if solvers[0].triqs_solver_params.get('measure_nn_tau'):
+                ar[f'downfold_2e/iter{iteration}']['Pi_imp_wabcd'] = Pi_ir.reshape(-1, norb_max, norb_max, norb_max, norb_max)
+                ar[f'downfold_2e/iter{iteration}']['W_imp_wabcd'] = W_ir.reshape(-1, norb_max, norb_max, norb_max, norb_max)
 
     mpi.report('*** iteration finished ***')
     mpi.report('#'*80)
