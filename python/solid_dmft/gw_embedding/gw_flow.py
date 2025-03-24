@@ -535,6 +535,18 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
                     solvers[ish].Sigma_Hartree[block] = (general_params['sigma_mix'] * solvers[ish].Sigma_Hartree[block]
                                                 + (1-general_params['sigma_mix']) * Sigma_Hartree_prev[block])
 
+            # mixing of impurity polarizability
+            if general_params['pi_mix'] < 1.0:
+                with HDFArchive(archive, 'a') as ar:
+                    dmft_out_grp = ar['DMFT_results']
+                    if f'it_{iteration-1}' in dmft_out_grp.keys() and f'Pi_dlr_{ish}' in dmft_out_grp[f'it_{iteration-1}'].keys():
+                        print('mixing polarizability with previous iteration by factor {:.3f}\n'.format(
+                            general_params['pi_mix']))
+                        Pi_dlr_prev = dmft_out_grp[f'it_{iteration-1}'][f'Pi_dlr_{ish}']
+                        solvers[ish].Pi_dlr << (general_params['pi_mix'] * solvers[ish].Pi_dlr
+                                                + (1 - general_params['pi_mix']) * Pi_dlr_prev)
+
+
             for i, (block, gf) in enumerate(Sigma_dlr[ish]):
                 # print Hartree shift
                 print('Σ_HF {}'.format(block))

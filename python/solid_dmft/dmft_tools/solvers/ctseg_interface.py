@@ -456,17 +456,26 @@ class CTSEGInterface(AbstractDMFTSolver):
         for i, j in product(range(norb), repeat=2):
             if i >= j:
                 # remove the constant part
-                nn_tau_dd[i,j].data[:] -= (dens_from_nn[i] * dens_from_nn[j])
+                nn_tau_dd[i, j].data[:] -= (dens_from_nn[i] * dens_from_nn[j])
                 # symmetrization
-                nn_tau_dd[i,j].data.imag = 0.0
-                nn_tau_pos = nn_tau_dd[i,j].data[:ntau_half]
-                nn_tau_dd[i,j].data[(ntau_half+1):] = nn_tau_pos[::-1]
+                nn_tau_dd[i, j].data.imag = 0.0
+                nn_tau_pos = nn_tau_dd[i, j].data[:ntau_half]
+                nn_tau_dd[i, j].data[(ntau_half+1):] = nn_tau_pos[::-1]
                 if i != j:
-                    nn_tau_dd[j,i] << nn_tau_dd[i,j]
+                    nn_tau_dd[j, i] << nn_tau_dd[i,j]
 
+        mpi.report("Symmetrizing the diagonal density-density susceptibility among orbitals.")
+        for degsh in self.sum_k.deg_shells[ish]:
+            orb_idx = np.array([int(key.split('_')[1]) for key in degsh])
+            unique_idx = list(set(orb_idx))
+            mpi.report(f"unique_idx = {unique_idx}")
+            nn_tmp = np.zeros(nn_tau_dd[0, 0].data[:].shape, dtype=complex)
+            mpi.report(f"nn_tmp shape = {nn_tmp.shape}")
 
-        # TODO orbital symmetrization
-
+            # Average over the diagonal elements indexed by unique_idx
+            nn_tmp = sum(nn_tau_dd.data[:, i, i] for i in unique_idx) / len(unique_idx)
+            for i in unique_idx:
+                nn_tau_dd.data[:, i, i] = nn_tmp
 
         # from density-density basis to product basis
         nn_tau_pb = Gf(mesh=nn_tau['up_0', 'up_0'].mesh, target_shape=[norb2, norb2])

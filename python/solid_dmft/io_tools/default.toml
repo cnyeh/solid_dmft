@@ -53,6 +53,7 @@ seedname = "<no default>"
 set_rot = "<none>"
 sigma_conv_crit = -1.0
 sigma_mix = 1.0
+pi_mix = 1.0
 store_solver = false
 U = "<none>"
 U_crpa_threshold = 0.0
