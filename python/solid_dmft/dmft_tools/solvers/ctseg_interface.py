@@ -504,10 +504,15 @@ class CTSEGInterface(AbstractDMFTSolver):
                 Uloc_iw_pb[i*norb+i, j*norb+j] << Uloc_iw_dlr[i, j, i, j]
                 Uloc_iw_pb[i*norb+i, j*norb+j].data[:] += Vloc[i, j, i, j]
                 Uloc_iw_pb[j*norb+j, i*norb+i] << Uloc_iw_pb[i*norb+i, j*norb+j]
-                # Hund's J
-                Uloc_iw_pb[i*norb+j, j*norb+i] << Uloc_iw_dlr[i, j, j, i]
-                Uloc_iw_pb[i*norb+j, j*norb+i].data[:] += Vloc[i, j, j, i]
-                Uloc_iw_pb[j*norb+i, i*norb+j] << Uloc_iw_pb[i*norb+j, j*norb+i]
+                # Hund's J: Spin-flip (i, j, j, i)
+                Uloc_iw_pb[j*norb+i, j*norb+i] << Uloc_iw_dlr[i, j, j, i]
+                Uloc_iw_pb[j*norb+i, j*norb+i].data[:] += Vloc[i, j, j, i]
+                Uloc_iw_pb[i*norb+j, i*norb+j] << Uloc_iw_pb[j*norb+i, j*norb+i]
+                # Hund's J: Pair hopping (i, j, i, j)
+                Uloc_iw_pb[j*norb+i, i*norb+j] << Uloc_iw_dlr[i, i, j, j]
+                Uloc_iw_pb[j*norb+i, i*norb+j].data[:] += Vloc[i, i, j, j]
+                Uloc_iw_pb[i*norb+j, j*norb+i] << Uloc_iw_pb[j*norb+i, i*norb+j]
+
 
         # Dyson equation: Pi(w) = [U(w)*Chi(w) - I]^-1 * Chi(w)
         mpi.report("Dyson equation for impurity polarizability")
@@ -531,7 +536,11 @@ class CTSEGInterface(AbstractDMFTSolver):
                 # inter-orbital density-density term
                 W_iw_pb[i*norb+i, j*norb+j].data[:] -= Vloc[i, j, i, j]
                 W_iw_pb[j*norb+j, i*norb+i] << W_iw_pb[i*norb+i, j*norb+j]
-                # Hund's J
-                W_iw_pb[i*norb+j, j*norb+i].data[:] -= Vloc[i, j, j, i]
-                W_iw_pb[j*norb+i, i*norb+j] << W_iw_pb[i*norb+j, j*norb+i]
+                # Hund's J: Spin-flip (i, j, j, i)
+                W_iw_pb[j*norb+i, j*norb+i].data[:] -= Vloc[i, j, j, i]
+                W_iw_pb[i*norb+j, i*norb+j] << W_iw_pb[j*norb+i, j*norb+i]
+                # Hund's J: Pair hopping (i, j, i, j)
+                W_iw_pb[j*norb+i, i*norb+j].data[:] -= Vloc[i, i, j, j]
+                W_iw_pb[i*norb+j, j*norb+i] << W_iw_pb[j*norb+i, i*norb+j]
+
         self.W_dlr = make_gf_dlr(W_iw_pb)
