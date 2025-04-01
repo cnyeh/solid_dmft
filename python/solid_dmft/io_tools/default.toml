@@ -125,6 +125,7 @@ length_cycle = "<no default>"
 max_time = -1
 measure_G_tau = true
 measure_nn_tau = false
+measure_nn_static = false
 measure_pert_order = true
 measure_state_hist = true
 n_cycles_tot = "<no default>"
@@ -133,6 +134,7 @@ n_tau_bosonic = 10001
 n_warmup_cycles = "<no default>"
 off_diag_threshold = 0.0
 perform_tail_fit = false
+analytic_hf = false
 random_seed = "<none>"
 
 [[solver]]

@@ -107,7 +107,8 @@ def _compile_information(sum_k, general_params, solver_params, solvers, map_imp_
             # if legendre was set, that we have both now!
             write_to_h5['orbital_occupations_{}'.format(icrsh)] = solvers[icrsh].orbital_occupations
             write_to_h5['Sigma_Hartree_{}'.format(icrsh)] = solvers[icrsh].Sigma_Hartree
-            write_to_h5['Sigma_moments_{}'.format(icrsh)] = solvers[icrsh].Sigma_moments
+            if solver_params[isolvsec]['analytic_hf']:
+                write_to_h5['Sigma_moments_{}'.format(icrsh)] = solvers[icrsh].Sigma_moments
             if (solver_params[isolvsec]['legendre_fit']):
                 write_to_h5['G_time_orig_{}'.format(icrsh)] = solvers[icrsh].G_time_orig
                 write_to_h5['Gimp_l_{}'.format(icrsh)] = solvers[icrsh].G_l
@@ -122,6 +123,8 @@ def _compile_information(sum_k, general_params, solver_params, solvers, map_imp_
                 write_to_h5['nn_dlr_{}'.format(icrsh)] = solvers[icrsh].nn_dlr
                 write_to_h5['Pi_dlr_{}'.format(icrsh)] = solvers[icrsh].Pi_dlr
                 write_to_h5['W_dlr_{}'.format(icrsh)] = solvers[icrsh].W_dlr
+            if solver_params[isolvsec]['measure_nn_static']:
+                write_to_h5['nn_static_{}'.format(icrsh)] = solvers[icrsh].triqs_solver.results.nn_static
             if solver_params[isolvsec]['measure_state_hist']:
                 write_to_h5['state_hist_{}'.format(icrsh)] = solvers[icrsh].state_histogram
             if solver_params[isolvsec]['crm_dyson_solver']:

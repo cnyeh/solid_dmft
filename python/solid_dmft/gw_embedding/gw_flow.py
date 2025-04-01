@@ -351,11 +351,16 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
     # create solver objects
     solvers = [None] * sumk.n_inequiv_shells
     if mpi.is_master_node():
+        G_dlr = [None] * sumk.n_inequiv_shells
+        G_dlr_iw = [None] * sumk.n_inequiv_shells
         Sigma_dlr = [None] * sumk.n_inequiv_shells
         Sigma_dlr_iw = [None] * sumk.n_inequiv_shells
         ir_mesh_idx = ir_kernel.wn_mesh(stats='f', ir_notation=False)
         ir_mesh = (2*ir_mesh_idx+1)*np.pi/gw_params['beta']
         norb_max = max(gw_params['n_orb'])
+        G_ir = np.zeros((len(ir_mesh_idx), gw_params['number_of_spins'],
+                         sumk.n_inequiv_shells, norb_max, norb_max),
+                        dtype=complex)
         Sigma_ir = np.zeros((len(ir_mesh_idx), gw_params['number_of_spins'],
                              sumk.n_inequiv_shells, norb_max, norb_max),
                             dtype=complex)
@@ -466,7 +471,7 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
         mpi.report('\nSolving the impurity problem for shell {} ...'.format(ish))
         mpi.barrier()
         start_time = timer()
-        solvers[ish].solve()
+        solvers[ish].solve(it=iteration)
         mpi.barrier()
         mpi.report('Actual time for solver: {:.2f} s'.format(timer() - start_time))
 
@@ -510,6 +515,15 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
 
                 sumk.symm_deg_gf(Sigma_dlr_iw[ish],ish=ish)
                 Sigma_dlr[ish] = make_gf_dlr(Sigma_dlr_iw[ish])
+
+                G_dlr_iw[ish] = sumk.block_structure.create_gf(ish=ish, gf_function=Gf, space='solver',
+                                                               mesh=gw_params['mesh_dlr_iw_f'])
+                for w in G_dlr_iw[ish].mesh:
+                    for block, gf in G_dlr_iw[ish]:
+                        gf[w] = solvers[ish].G_freq[block](w)
+
+                sumk.symm_deg_gf(G_dlr_iw[ish], ish=ish)
+                G_dlr[ish] = make_gf_dlr(G_dlr_iw[ish])
 
             # mixing of impurity Sigma
             if general_params['sigma_mix'] < 1.0:
@@ -568,6 +582,7 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
 
             iw_mesh = solvers[ish].Sigma_freq.mesh
             # convert Sigma to sumk basis
+            G_dlr_sumk = sumk.block_structure.convert_gf(G_dlr[ish], ish_from=ish, space_from='solver', space_to='sumk')
             Sigma_dlr_sumk = sumk.block_structure.convert_gf(Sigma_dlr[ish], ish_from=ish, space_from='solver', space_to='sumk')
             Sigma_Hartree_sumk = sumk.block_structure.convert_matrix(solvers[ish].Sigma_Hartree, ish_from=ish, space_from='solver', space_to='sumk')
             # store Sigma and V_HF in sumk basis on IR mesh
@@ -580,6 +595,17 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
                     iw_neg = ir_nw_half-1-iw_idx
                     Sigma_ir[iw_pos,i,ish] = gf(iw_mesh(ir_mesh_idx[iw_pos]))
                     Sigma_ir[iw_neg,i,ish] = gf(iw_mesh(ir_mesh_idx[iw_pos])).conj()
+
+                if not general_params['magnetic']:
+                    break
+
+            for i, (block, gf) in enumerate(G_dlr_sumk):
+                # Make sure G_ir[iw].conj() = G_ir[-iw]
+                for iw_idx in range(ir_nw_half):
+                    iw_pos = ir_nw_half+iw_idx
+                    iw_neg = ir_nw_half-1-iw_idx
+                    G_ir[iw_pos,i,ish] = gf(iw_mesh(ir_mesh_idx[iw_pos]))
+                    G_ir[iw_neg,i,ish] = gf(iw_mesh(ir_mesh_idx[iw_pos])).conj()
 
                 if not general_params['magnetic']:
                     break
@@ -614,14 +640,16 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
             ar['DMFT_results/it_{}'.format(iteration)]['Vhf_imp_sIab'] = Vhf_imp_sIab
             for ish in range(sumk.n_inequiv_shells):
                 ar['DMFT_results/it_{}'.format(iteration)][f'Sigma_dlr_{ish}'] = Sigma_dlr[ish]
+                ar['DMFT_results/it_{}'.format(iteration)][f'G_dlr_{ish}'] = G_dlr[ish]
 
         # write results to GW h5_file
         with HDFArchive(gw_params['h5_file'], 'a') as ar:
+            ar[f'downfold_1e/iter{iteration}']['G_imp_wsIab'] = G_ir
             ar[f'downfold_1e/iter{iteration}']['Sigma_imp_wsIab'] = Sigma_ir
             ar[f'downfold_1e/iter{iteration}']['Vhf_imp_sIab'] = Vhf_imp_sIab
             if solvers[0].triqs_solver_params.get('measure_nn_tau'):
                 ar[f'downfold_2e/iter{iteration}']['Pi_imp_wabcd'] = Pi_ir.reshape(-1, norb_max, norb_max, norb_max, norb_max)
-                ar[f'downfold_2e/iter{iteration}']['W_imp_wabcd'] = W_ir.reshape(-1, norb_max, norb_max, norb_max, norb_max)
+                ar[f'downfold_2e/iter{iteration}']['W_imp_wabcd'] = W_ir.reshape(-1, norb_max, norb_max, norb_max, norb_max).transpose(0,2,1,3,4)
 
     mpi.report('*** iteration finished ***')
     mpi.report('#'*80)

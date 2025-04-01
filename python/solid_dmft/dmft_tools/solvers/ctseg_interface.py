@@ -52,6 +52,7 @@ class CTSEGInterface(AbstractDMFTSolver):
             'max_time',
             'measure_state_hist',
             'measure_nn_tau',
+            'measure_nn_static',
             'measure_G_tau',
             'measure_pert_order',
         )
@@ -195,43 +196,47 @@ class CTSEGInterface(AbstractDMFTSolver):
         self.orbital_occupations_sumk = self.sum_k.block_structure.convert_matrix(
             self.orbital_occupations, ish_from=self.icrsh, space_from='solver', space_to='sumk'
         )
-        self.Sigma_Hartree = {}
-        self.Sigma_Hartree_sumk = {}
-        self.Sigma_moments = {}
-        if mpi.is_master_node():
-            mpi.report('Evaluating static impurity self-energy analytically using interacting density from ctseg...\n'
-                       '(results will be used in the subsequent tail fitting or the crm dyson solver)')
-            Uijkl, Uw0_ijkl = self.extract_Uijkl_from_h_int(return_w0=True)
-            norb = Uijkl.shape[0]
+        if self.solver_params['crm_dyson_solver'] and not self.solver_params['analytic_hf']:
+            mpi.report('Found crm_dyson_solver for ct-seg post-processing. Will set analytic_hf to true anyway.')
+            self.solver_params['analytic_hf'] = True
 
-            # now calculated Hartree shift via
-            # \Sigma^0_{\alpha \beta} = \sum_{i j} n_{i j} \left( 2 Uw0_{\alpha i \beta j} - U_{\alpha i j \beta} \right)
-            for block, norb in self.sum_k.gf_struct_sumk[self.icrsh]:
-                self.Sigma_Hartree_sumk[block] = np.zeros((norb, norb), dtype=float)
-                for iorb, jorb in product(range(norb), repeat=2):
-                    for inner in range(norb):
-                        # exchange diagram K
-                        self.Sigma_Hartree_sumk[block][iorb, jorb] -= (
+        if self.solver_params['analytic_hf'] or self.solver_params['crm_dyson_solver']:
+            self.Sigma_Hartree = {}
+            self.Sigma_Hartree_sumk = {}
+            self.Sigma_moments = {}
+            if mpi.is_master_node():
+                mpi.report('Evaluating static impurity self-energy analytically using interacting density from ctseg...\n'
+                           '(results will be used in the subsequent tail fitting or the crm dyson solver)')
+                Uijkl, Uw0_ijkl = self.extract_Uijkl_from_h_int(return_w0=True)
+
+                # now calculated Hartree shift via
+                # \Sigma^0_{\alpha \beta} = \sum_{i j} n_{i j} \left( 2 Uw0_{\alpha i \beta j} - U_{\alpha i j \beta} \right)
+                for block, norb in self.sum_k.gf_struct_sumk[self.icrsh]:
+                    self.Sigma_Hartree_sumk[block] = np.zeros((norb, norb), dtype=float)
+                    for iorb, jorb in product(range(norb), repeat=2):
+                        for inner in range(norb):
+                            # exchange diagram K
+                            self.Sigma_Hartree_sumk[block][iorb, jorb] -= (
                                 self.orbital_occupations_sumk[block][inner, inner].real * (Uijkl[iorb, inner, inner, jorb].real))
-                        # Hartree (Coulomb) diagram J
-                        self.Sigma_Hartree_sumk[block][iorb, jorb] += (
+                            # Hartree (Coulomb) diagram J
+                            self.Sigma_Hartree_sumk[block][iorb, jorb] += (
                                 self.orbital_occupations_sumk[block][inner, inner].real * (2 * Uw0_ijkl[iorb, inner, jorb, inner].real))
 
-            # convert to solver block structure
-            self.Sigma_Hartree = self.sum_k.block_structure.convert_matrix(
-                self.Sigma_Hartree_sumk, ish_from=self.icrsh, space_from='sumk', space_to='solver'
-            )
+                # convert to solver block structure
+                self.Sigma_Hartree = self.sum_k.block_structure.convert_matrix(
+                    self.Sigma_Hartree_sumk, ish_from=self.icrsh, space_from='sumk', space_to='solver'
+                )
 
-            # use degenerate shell information to symmetrize
-            self.sum_k.symm_deg_gf(self.Sigma_Hartree, ish=self.icrsh)
+                # use degenerate shell information to symmetrize
+                self.sum_k.symm_deg_gf(self.Sigma_Hartree, ish=self.icrsh)
 
-            # create moments array from this
-            for block, hf_val in self.Sigma_Hartree.items():
-                self.Sigma_moments[block] = np.array([hf_val])
+                # create moments array from this
+                for block, hf_val in self.Sigma_Hartree.items():
+                    self.Sigma_moments[block] = np.array([hf_val])
 
-        self.Sigma_Hartree = mpi.bcast(self.Sigma_Hartree)
-        self.Sigma_moments = mpi.bcast(self.Sigma_moments)
-        self.Sigma_Hartree_sumk = mpi.bcast(self.Sigma_Hartree_sumk)
+            self.Sigma_Hartree = mpi.bcast(self.Sigma_Hartree)
+            self.Sigma_moments = mpi.bcast(self.Sigma_moments)
+            self.Sigma_Hartree_sumk = mpi.bcast(self.Sigma_Hartree_sumk)
 
         if mpi.is_master_node():
             # create empty moment container (list of np.arrays)
@@ -255,11 +260,11 @@ class CTSEGInterface(AbstractDMFTSolver):
             set_Gs_from_G_l()
         elif self.solver_params['perform_tail_fit']:
             if not self.solver_params['improved_estimator']:
-                mpi.report('Self-energy post-processing algorithm: tail fitting with analytic static impurity self-energy')
+                mpi.report('Self-energy post-processing algorithm: tail fitting')
                 self.Sigma_freq = inverse(self.G0_freq) - inverse(self.G_freq)
             else:
                 mpi.report('Self-energy post-processing algorithm: '
-                           'improved estimator + tail fitting with analytic static imppurity self-energy')
+                           'improved estimator + tail fitting')
                 self.F_freq = self.G_freq.copy()
                 self.F_freq << 0.0
                 self.F_time = self.G_time.copy()
@@ -273,7 +278,8 @@ class CTSEGInterface(AbstractDMFTSolver):
                 for block, fw in self.F_freq:
                     for iw in fw.mesh:
                         self.Sigma_freq[block][iw] = self.F_freq[block][iw] / self.G_freq[block][iw]
-
+            if self.solver_params['analytic_hf']:
+                mpi.report('Use analytic HF self-energy as the 0-th moment for tail fitting.')
             # without any degenerate shells we run the minimization for all blocks
             self.Sigma_freq, tail = self._fit_tail_window(
                 self.Sigma_freq,
@@ -282,7 +288,7 @@ class CTSEGInterface(AbstractDMFTSolver):
                 fit_min_w=self.solver_params['fit_min_w'],
                 fit_max_w=self.solver_params['fit_max_w'],
                 fit_max_moment=self.solver_params['fit_max_moment'],
-                fit_known_moments=self.Sigma_moments,
+                fit_known_moments=self.Sigma_moments if self.solver_params['analytic_hf'] else None,
             )
 
             # recompute G_freq from Sigma with fitted tail
@@ -426,6 +432,7 @@ class CTSEGInterface(AbstractDMFTSolver):
         mpi.report('\nPost-processing the density-density susceptibility to obtain the impurity polarizability.')
 
         nn_tau = self.triqs_solver.results.nn_tau
+        nn_static = self.triqs_solver.results.nn_static
         ish = self.sum_k.inequiv_to_corr[self.icrsh]
         norb = common.get_n_orbitals(self.sum_k)[ish]['up']
         norb2 = norb * norb
@@ -468,9 +475,7 @@ class CTSEGInterface(AbstractDMFTSolver):
         for degsh in self.sum_k.deg_shells[ish]:
             orb_idx = np.array([int(key.split('_')[1]) for key in degsh])
             unique_idx = list(set(orb_idx))
-            mpi.report(f"unique_idx = {unique_idx}")
             nn_tmp = np.zeros(nn_tau_dd[0, 0].data[:].shape, dtype=complex)
-            mpi.report(f"nn_tmp shape = {nn_tmp.shape}")
 
             # Average over the diagonal elements indexed by unique_idx
             nn_tmp = sum(nn_tau_dd.data[:, i, i] for i in unique_idx) / len(unique_idx)
@@ -520,7 +525,10 @@ class CTSEGInterface(AbstractDMFTSolver):
         ones = np.eye(norb2, dtype=complex)
         for iwn in nn_iw_pb.mesh:
             denom = Uloc_iw_pb[iwn] @ nn_iw_pb[iwn] - ones
-            pi_iw_pb[iwn] = np.linalg.inv(denom) @ nn_iw_pb[iwn]
+            cond = np.linalg.cond(denom)
+            if cond > 50:
+                mpi.report(f"WARNING: Large condition number for [U(w) * Chi(w) - I] = {cond}")
+            pi_iw_pb[iwn] = np.linalg.pinv(denom) @ nn_iw_pb[iwn]
         self.Pi_dlr = make_gf_dlr(pi_iw_pb)
 
         # Screened interaction W(w) = U(w) - U(w) * Chi(w) * U(w)
