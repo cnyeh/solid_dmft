@@ -3,7 +3,7 @@ from itertools import product
 
 from triqs.gf import (MeshDLRImFreq, Gf, BlockGf, make_gf_imfreq, make_hermitian,
                       make_gf_dlr, fit_gf_dlr, make_gf_dlr_imtime, make_gf_imtime,
-                      make_gf_dlr_imfreq, Idx)
+                      make_gf_from_fourier, make_gf_dlr_imfreq, Idx)
 from triqs.gf.tools import inverse, make_zero_tail
 from triqs.gf.descriptors import Fourier
 from triqs.operators.util.U_matrix import reduce_4index_to_2index
@@ -59,6 +59,9 @@ class CTSEGInterface(AbstractDMFTSolver):
         for key in keys_to_pass:
             self.triqs_solver_params[key] = self.solver_params[key]
 
+        if self.triqs_solver_params['measure_nn_tau']:
+            self.triqs_solver_params['measure_nn_static'] = True
+
         # Calculates number of sweeps per rank
         self.triqs_solver_params['n_cycles'] = int(self.solver_params['n_cycles_tot'] / mpi.size)
         # cast warmup cycles to int in case given in scientific notation
@@ -95,6 +98,8 @@ class CTSEGInterface(AbstractDMFTSolver):
         self.triqs_solver.Delta_tau << self.Delta_time
 
         if self.general_params['h_int_type'][self.icrsh] == 'dyn_density_density':
+            # TODO Check screening function with J(w).
+            #      Can we formally derive HF @ U(w) and then compare to my density-density approximation?
             mpi.report('\nAdding dynamic interaction from AIMBES.')
             # convert 4 idx tensor to two index tensor
             Uloc_dlr = self.gw_params['Uloc_dlr'][self.icrsh]['up']
@@ -438,13 +443,13 @@ class CTSEGInterface(AbstractDMFTSolver):
         norb2 = norb * norb
         gf_struct = self.sum_k.gf_struct_solver_list[ish]
 
-        nn_tau_dd = Gf(mesh=nn_tau['up_0', 'up_0'].mesh, target_shape=[norb, norb])
+        self.nn_time = Gf(mesh=nn_tau['up_0', 'up_0'].mesh, target_shape=[norb, norb])
         o1 = 0
         for name1, n1 in gf_struct:
             o2 = 0
             for name2, n2 in gf_struct:
                 assert n1 == n2
-                nn_tau_dd.data[:, o1:(o1+n1), o2:(o2+n2)] += nn_tau[name1, name2].data[:]
+                self.nn_time.data[:, o1:(o1+n1), o2:(o2+n2)] += nn_tau[name1, name2].data[:]
                 o2 = (o2 + n2) % norb
             o1 = (o1 + n1) % norb
 
@@ -453,68 +458,72 @@ class CTSEGInterface(AbstractDMFTSolver):
         o1 = 0
         for name, n1 in gf_struct:
             for i in range(n1):
-                dens_from_nn[o1 + i] += nn_tau[name, name](Idx(0))[i, i].real
+                dens_from_nn[o1 + i] += nn_static[(f"{name}", f"{name}")][i, i].real
             o1 = (o1 + n1) % norb
+        mpi.report(f"Occupations from equal-time density-density susceptibility: {dens_from_nn}")
 
         # symmetrization
         mpi.report('Symmetrizing the density-density susceptibility: nn(t) = nn(beta-t) and nn(t).imag = 0.0 ')
-        n_tau = self.solver_params['n_tau_bosonic']
-        ntau_half = n_tau // 2
+        #n_tau = self.solver_params['n_tau_bosonic']
+        #ntau_half = n_tau // 2
         for i, j in product(range(norb), repeat=2):
             if i >= j:
                 # remove the constant part
-                nn_tau_dd[i, j].data[:] -= (dens_from_nn[i] * dens_from_nn[j])
+                self.nn_time[i, j].data[:] -= (dens_from_nn[i] * dens_from_nn[j])
                 # symmetrization
-                nn_tau_dd[i, j].data.imag = 0.0
-                nn_tau_pos = nn_tau_dd[i, j].data[:ntau_half]
-                nn_tau_dd[i, j].data[(ntau_half+1):] = nn_tau_pos[::-1]
+                self.nn_time[i, j].data.imag = 0.0
+                #nn_tau_pos = self.nn_time[i, j].data[:ntau_half]
+                #self.nn_time[i, j].data[(ntau_half+1):] = nn_tau_pos[::-1]
                 if i != j:
-                    nn_tau_dd[j, i] << nn_tau_dd[i,j]
+                    self.nn_time[j, i] << self.nn_time[i,j]
 
         mpi.report("Symmetrizing the diagonal density-density susceptibility among orbitals.")
         for degsh in self.sum_k.deg_shells[ish]:
             orb_idx = np.array([int(key.split('_')[1]) for key in degsh])
             unique_idx = list(set(orb_idx))
-            nn_tmp = np.zeros(nn_tau_dd[0, 0].data[:].shape, dtype=complex)
 
             # Average over the diagonal elements indexed by unique_idx
-            nn_tmp = sum(nn_tau_dd.data[:, i, i] for i in unique_idx) / len(unique_idx)
+            nn_tmp = sum(self.nn_time.data[:, i, i] for i in unique_idx) / len(unique_idx)
             for i in unique_idx:
-                nn_tau_dd.data[:, i, i] = nn_tmp
+                self.nn_time.data[:, i, i] = nn_tmp
+
+        self.nn_freq = make_gf_from_fourier(self.nn_time, n_iw=self.general_params['n_iw'])
+        if mpi.is_master_node():
+            # create empty moment container (list of np.arrays)
+            nn_known_moments = make_zero_tail(self.nn_freq, n_moments=2)
+            self.nn_freq << Fourier(self.nn_time, nn_known_moments)
+        self.nn_freq << mpi.bcast(self.nn_freq)
 
         # from density-density basis to product basis
-        nn_tau_pb = Gf(mesh=nn_tau['up_0', 'up_0'].mesh, target_shape=[norb2, norb2])
+        nn_iw_pb = Gf(mesh=self.nn_freq.mesh, target_shape=[norb2, norb2])
         for i, j in product(range(norb), repeat=2):
             if i >= j:
-                nn_tau_pb[i*norb+i, j*norb+j] << nn_tau_dd[i,j]
+                # only the real part
+                nn_iw_pb[i*norb+i, j*norb+j] << self.nn_freq[i,j].real
                 if i != j:
-                    nn_tau_pb[j*norb+j, i*norb+i] << nn_tau_pb[i*norb+i, j*norb+j]
-
-        self.nn_dlr = fit_gf_dlr(nn_tau_pb, w_max=self.general_params['dlr_wmax'],
-                                 eps=self.general_params['dlr_eps'], symmetrize=True)
-        nn_iw_pb = make_gf_dlr_imfreq(self.nn_dlr)
+                    nn_iw_pb[j*norb+j, i*norb+i] << nn_iw_pb[i*norb+i, j*norb+j]
 
         # Screened Coulomb interaction in the product basis set
         Vloc = self.gw_params['Vloc'][self.icrsh]['up']
-        Uloc_iw_dlr = make_gf_dlr_imfreq(self.gw_params['Uloc_dlr'][self.icrsh]['up'])
-        Uloc_iw_pb = Gf(mesh=Uloc_iw_dlr.mesh, target_shape=[norb2, norb2])
-        # Uloc_iw_dlr and Vloc follow triqs notation for Coulomb interactions
+        Uloc_iw = make_gf_imfreq(self.gw_params['Uloc_dlr'][self.icrsh]['up'], n_iw=self.general_params['n_iw'])
+        Uloc_iw_pb = Gf(mesh=Uloc_iw.mesh, target_shape=[norb2, norb2])
+        # Uloc_iw and Vloc follow triqs notation for Coulomb interactions
         for i, j in product(range(norb), repeat=2):
             if i == j:
                 # intra-orbital density-density term
-                Uloc_iw_pb[i*norb+i, i*norb+i] << Uloc_iw_dlr[i, i, i, i]
+                Uloc_iw_pb[i*norb+i, i*norb+i] << Uloc_iw[i, i, i, i]
                 Uloc_iw_pb[i*norb+i, i*norb+i].data[:] += Vloc[i, i, i, i]
             if i > j:
                 # inter-orbital density-density term
-                Uloc_iw_pb[i*norb+i, j*norb+j] << Uloc_iw_dlr[i, j, i, j]
+                Uloc_iw_pb[i*norb+i, j*norb+j] << Uloc_iw[i, j, i, j]
                 Uloc_iw_pb[i*norb+i, j*norb+j].data[:] += Vloc[i, j, i, j]
                 Uloc_iw_pb[j*norb+j, i*norb+i] << Uloc_iw_pb[i*norb+i, j*norb+j]
                 # Hund's J: Spin-flip (i, j, j, i)
-                Uloc_iw_pb[j*norb+i, j*norb+i] << Uloc_iw_dlr[i, j, j, i]
+                Uloc_iw_pb[j*norb+i, j*norb+i] << Uloc_iw[i, j, j, i]
                 Uloc_iw_pb[j*norb+i, j*norb+i].data[:] += Vloc[i, j, j, i]
                 Uloc_iw_pb[i*norb+j, i*norb+j] << Uloc_iw_pb[j*norb+i, j*norb+i]
                 # Hund's J: Pair hopping (i, j, i, j)
-                Uloc_iw_pb[j*norb+i, i*norb+j] << Uloc_iw_dlr[i, i, j, j]
+                Uloc_iw_pb[j*norb+i, i*norb+j] << Uloc_iw[i, i, j, j]
                 Uloc_iw_pb[j*norb+i, i*norb+j].data[:] += Vloc[i, i, j, j]
                 Uloc_iw_pb[i*norb+j, j*norb+i] << Uloc_iw_pb[j*norb+i, i*norb+j]
 
@@ -529,7 +538,15 @@ class CTSEGInterface(AbstractDMFTSolver):
             if cond > 50:
                 mpi.report(f"WARNING: Large condition number for [U(w) * Chi(w) - I] = {cond}")
             pi_iw_pb[iwn] = np.linalg.pinv(denom) @ nn_iw_pb[iwn]
-        self.Pi_dlr = make_gf_dlr(pi_iw_pb)
+            # explicit set Pi(iw).imag = 0.0
+            pi_iw_pb[iwn].imag = 0.0
+
+        # fit to DLR
+        pi_dlr_iw = Gf(mesh=self.gw_params['mesh_dlr_iw_b'], target_shape=pi_iw_pb.target_shape)
+        for w in pi_dlr_iw.mesh:
+            # print(w)
+            pi_dlr_iw[w] = pi_iw_pb(w)
+        self.Pi_dlr = make_gf_dlr(pi_dlr_iw)
 
         # Screened interaction W(w) = U(w) - U(w) * Chi(w) * U(w)
         W_iw_pb = Gf(mesh=nn_iw_pb.mesh, target_shape=nn_iw_pb.target_shape)
@@ -551,4 +568,8 @@ class CTSEGInterface(AbstractDMFTSolver):
                 W_iw_pb[j*norb+i, i*norb+j].data[:] -= Vloc[i, i, j, j]
                 W_iw_pb[i*norb+j, j*norb+i] << W_iw_pb[j*norb+i, i*norb+j]
 
-        self.W_dlr = make_gf_dlr(W_iw_pb)
+        # fit to DLR
+        W_dlr_iw = Gf(mesh=self.gw_params['mesh_dlr_iw_b'], target_shape=pi_iw_pb.target_shape)
+        for w in W_dlr_iw.mesh:
+            W_dlr_iw[w] = W_iw_pb(w)
+        self.W_dlr = make_gf_dlr(W_dlr_iw)

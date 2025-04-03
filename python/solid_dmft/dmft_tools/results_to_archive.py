@@ -120,7 +120,8 @@ def _compile_information(sum_k, general_params, solver_params, solvers, map_imp_
                 write_to_h5['avg_order_imp_{}'.format(icrsh)] = solvers[icrsh].avg_pert_order
             if solver_params[isolvsec]['measure_nn_tau']:
                 write_to_h5['O_NN_{}'.format(icrsh)] = solvers[icrsh].triqs_solver.results.nn_tau
-                write_to_h5['nn_dlr_{}'.format(icrsh)] = solvers[icrsh].nn_dlr
+                write_to_h5['nn_time_{}'.format(icrsh)] = solvers[icrsh].nn_time
+                write_to_h5['nn_freq_{}'.format(icrsh)] = solvers[icrsh].nn_freq
                 write_to_h5['Pi_dlr_{}'.format(icrsh)] = solvers[icrsh].Pi_dlr
                 write_to_h5['W_dlr_{}'.format(icrsh)] = solvers[icrsh].W_dlr
             if solver_params[isolvsec]['measure_nn_static']:
