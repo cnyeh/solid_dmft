@@ -142,6 +142,7 @@ type = "hubbardI"
 idx_impurities = "<none>"
 legendre_fit = false
 measure_density_matrix = true
+measure_G_w = false
 measure_G_l = false
 measure_G_tau = true
 n_l = "<none>"

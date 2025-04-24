@@ -24,7 +24,7 @@ class HubbardIInterface(AbstractDMFTSolver):
         # All params need to be renamed
         self.triqs_solver_params = {}
         self.triqs_solver_params['calc_gtau'] = self.solver_params['measure_G_tau']
-        self.triqs_solver_params['calc_gw'] = True
+        self.triqs_solver_params['calc_gw'] = self.solver_params['measure_G_w']
         self.triqs_solver_params['calc_gl'] = self.solver_params['measure_G_l']
         self.triqs_solver_params['calc_dm'] = self.solver_params['measure_density_matrix']
 

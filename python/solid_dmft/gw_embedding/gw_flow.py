@@ -277,7 +277,7 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
         mpi.report(f"\n!!! WARNING !!!!\n"
                    f"general_params['n_iw'] = {general_params['n_iw']} < maximum DLRImFreq index ({max_idx}). "
                    f"solid_dmft will automatically set general_params['n_iw'] = {max_idx+1}.\n")
-        general_params['n_iw'] = max_idx + 1
+        general_params['n_iw'] = int(max_idx + 1)
 
     general_params['beta'] = gw_params['beta']
     sumk_mesh = MeshImFreq(beta=general_params['beta'], statistic='Fermion', n_iw=general_params['n_iw'])
