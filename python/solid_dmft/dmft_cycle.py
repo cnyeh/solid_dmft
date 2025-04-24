@@ -102,7 +102,8 @@ def _extract_quantity_per_inequiv(param_name, n_inequiv_shells, general_params):
 
     return general_params
 
-def _determine_block_structure(sum_k, general_params, advanced_params, solver_type_per_imp, dens_mat):
+def _determine_block_structure(sum_k, general_params, advanced_params, solver_type_per_imp,
+                               dens_mat, h0_mat=None):
     """
     Determines block structrure and degenerate deg_shells
     computes first DFT density matrix to determine block structure and changes
@@ -138,8 +139,12 @@ def _determine_block_structure(sum_k, general_params, advanced_params, solver_ty
 
     # Only removes the off-diagonal terms for the selected impurities
     imp_to_analyze = [i for i, offdiag in enumerate(general_params['enforce_off_diag']) if not offdiag]
-    mpi.report('using 1-particle density matrix and Hloc (atomic levels) to determine the block structure')
-    sum_k.analyse_block_structure(dm=dens_mat, threshold=general_params['block_threshold'], include_shells=imp_to_analyze)
+    if h0_mat is None:
+        mpi.report('using 1-particle density matrix and Hloc (atomic levels) to determine the block structure')
+    else:
+        mpi.report('using 1-particle density matrix and Hloc to determine the block structure')
+    sum_k.analyse_block_structure(dm=dens_mat, hloc=h0_mat,
+                                  threshold=general_params['block_threshold'], include_shells=imp_to_analyze)
 
     # Applies manual selection of the solver struct
     if any(s is not None for s in advanced_params['pick_solver_struct']):

@@ -319,7 +319,8 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
     dens_mat_gw = [None] * sumk.n_inequiv_shells
     for ish in range(sumk.n_inequiv_shells):
         dens_mat_gw[ish] = gw_params['Gloc_dlr'][ish].density()
-    sumk, _ = _determine_block_structure(sumk, general_params, advanced_params, solver_type_per_imp, dens_mat_gw)
+    sumk, _ = _determine_block_structure(sumk, general_params, advanced_params, solver_type_per_imp,
+                                         dens_mat_gw, gw_params['Hloc0'])
 
     # print block structure and rotation matrix based on the DFT input
     if mpi.is_master_node():

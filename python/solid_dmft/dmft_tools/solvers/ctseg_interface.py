@@ -59,9 +59,6 @@ class CTSEGInterface(AbstractDMFTSolver):
         for key in keys_to_pass:
             self.triqs_solver_params[key] = self.solver_params[key]
 
-        if self.triqs_solver_params['measure_nn_tau']:
-            self.triqs_solver_params['measure_nn_static'] = True
-
         # Calculates number of sweeps per rank
         self.triqs_solver_params['n_cycles'] = int(self.solver_params['n_cycles_tot'] / mpi.size)
         # cast warmup cycles to int in case given in scientific notation
@@ -454,22 +451,25 @@ class CTSEGInterface(AbstractDMFTSolver):
             o1 = (o1 + n1) % norb
 
         # density for the constant part of chi
-        dens_from_nn = np.zeros(norb, dtype=float)
+        densities = np.zeros(norb, dtype=float)
         o1 = 0
         for name, n1 in gf_struct:
             for i in range(n1):
-                dens_from_nn[o1 + i] += nn_static[(f"{name}", f"{name}")][i, i].real
+                densities[o1+i] += self.triqs_solver.results.densities[name][i]
             o1 = (o1 + n1) % norb
-        mpi.report(f"Occupations from equal-time density-density susceptibility: {dens_from_nn}")
+        mpi.report(f"Average of time-dependent occupations: {densities}")
 
         # symmetrization
-        mpi.report('Symmetrizing the density-density susceptibility: nn(t) = nn(beta-t) and nn(t).imag = 0.0 ')
+        mpi.report('Symmetrizing the density-density susceptibility: \n'
+                   '  1. nn(t).imag = 0.0\n'
+                   '  2. nn(i, j) = nn(j, i)')
+                   #'  3. nn(t) = nn(beta-t)')
         #n_tau = self.solver_params['n_tau_bosonic']
         #ntau_half = n_tau // 2
         for i, j in product(range(norb), repeat=2):
             if i >= j:
                 # remove the constant part
-                self.nn_time[i, j].data[:] -= (dens_from_nn[i] * dens_from_nn[j])
+                self.nn_time[i, j].data[:] -= (densities[i] * densities[j])
                 # symmetrization
                 self.nn_time[i, j].data.imag = 0.0
                 #nn_tau_pos = self.nn_time[i, j].data[:ntau_half]
@@ -536,7 +536,7 @@ class CTSEGInterface(AbstractDMFTSolver):
             denom = Uloc_iw_pb[iwn] @ nn_iw_pb[iwn] - ones
             cond = np.linalg.cond(denom)
             if cond > 50:
-                mpi.report(f"WARNING: Large condition number for [U(w) * Chi(w) - I] = {cond}")
+                mpi.report(f"WARNING: Large condition number for [U(w) * Chi(w) - I] = {cond} at n = {iwn.index}.")
             pi_iw_pb[iwn] = np.linalg.pinv(denom) @ nn_iw_pb[iwn]
             # explicit set Pi(iw).imag = 0.0
             pi_iw_pb[iwn].imag = 0.0
