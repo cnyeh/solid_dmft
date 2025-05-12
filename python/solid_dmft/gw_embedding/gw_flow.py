@@ -29,7 +29,7 @@ Module for gw flow
 
 from timeit import default_timer as timer
 import numpy as np
-
+import os
 from h5 import HDFArchive
 from triqs.utility import mpi
 from triqs.gf import (
@@ -60,6 +60,8 @@ from solid_dmft.dmft_tools import interaction_hamiltonian
 from solid_dmft.dmft_cycle import _extract_quantity_per_inequiv, _determine_block_structure
 from solid_dmft.dmft_tools import greens_functions_mixer as gf_mixer
 from solid_dmft.gw_embedding.bdft_converter import convert_gw_output
+
+from py2aimb.dmft.iterative_scf.iter_scf import IterSCF
 
 
 class dummy_sumk(object):
@@ -356,6 +358,7 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
         G_dlr_iw = [None] * sumk.n_inequiv_shells
         Sigma_dlr = [None] * sumk.n_inequiv_shells
         Sigma_dlr_iw = [None] * sumk.n_inequiv_shells
+        Pi_dlr = [None] * sumk.n_inequiv_shells
         ir_mesh_idx = ir_kernel.wn_mesh(stats='f', ir_notation=False)
         ir_mesh = (2*ir_mesh_idx+1)*np.pi/gw_params['beta']
         norb_max = max(gw_params['n_orb'])
@@ -527,7 +530,7 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
                 G_dlr[ish] = make_gf_dlr(G_dlr_iw[ish])
 
             # mixing of impurity Sigma
-            if general_params['sigma_mix'] < 1.0:
+            if general_params['iterative_alg'] == 'mixing' and general_params['sigma_mix'] < 1.0:
                 with HDFArchive(archive, 'a') as ar:
                     dmft_out_grp = ar['DMFT_results']
                     if f'it_{iteration-1}' in dmft_out_grp.keys():
@@ -549,18 +552,6 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
                 for block in solvers[ish].Sigma_Hartree.keys():
                     solvers[ish].Sigma_Hartree[block] = (general_params['sigma_mix'] * solvers[ish].Sigma_Hartree[block]
                                                 + (1-general_params['sigma_mix']) * Sigma_Hartree_prev[block])
-
-            # mixing of impurity polarizability
-            if general_params['pi_mix'] < 1.0:
-                with HDFArchive(archive, 'a') as ar:
-                    dmft_out_grp = ar['DMFT_results']
-                    if f'it_{iteration-1}' in dmft_out_grp.keys() and f'Pi_dlr_{ish}' in dmft_out_grp[f'it_{iteration-1}'].keys():
-                        print('mixing polarizability with previous iteration by factor {:.3f}\n'.format(
-                            general_params['pi_mix']))
-                        Pi_dlr_prev = dmft_out_grp[f'it_{iteration-1}'][f'Pi_dlr_{ish}']
-                        solvers[ish].Pi_dlr << (general_params['pi_mix'] * solvers[ish].Pi_dlr
-                                                + (1 - general_params['pi_mix']) * Pi_dlr_prev)
-
 
             for i, (block, gf) in enumerate(Sigma_dlr[ish]):
                 # print Hartree shift
@@ -613,14 +604,72 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
 
             # post-processing for impurity polarizability
             if solvers[ish].triqs_solver_params.get('measure_nn_tau'):
+                Pi_dlr[ish] = solvers[ish].Pi_dlr.copy()
+
+                # mixing of impurity polarizability
+                if general_params['pi_mix'] < 1.0:
+                    with HDFArchive(archive, 'a') as ar:
+                        dmft_out_grp = ar['DMFT_results']
+                        if (f'it_{iteration - 1}' in dmft_out_grp.keys() and
+                                f'Pi_dlr_{ish}' in dmft_out_grp[f'it_{iteration - 1}'].keys()):
+                            print('mixing polarizability with previous iteration by factor {:.3f}\n'.format(
+                                general_params['pi_mix']))
+                            Pi_dlr_prev = dmft_out_grp[f'it_{iteration - 1}'][f'Pi_dlr_{ish}']
+                        else:
+                            print('no previous impurity polarizability found -- '
+                                  'mixing polarizability with the double counting by factor {:.3f}\n'.format(
+                                    general_params['pi_mix']))
+                            Pi_dlr_prev = gw_params['Pi_DC_dlr'][ish]['up']
+                    Pi_dlr[ish] << (general_params['pi_mix'] * Pi_dlr[ish]
+                                    + (1 - general_params['pi_mix']) * Pi_dlr_prev)
+
                 # store Pi, nn, and W on IR mesh
                 iw_mesh_b = MeshImFreq(beta=general_params['beta'], statistic='Boson', n_iw=ir_mesh_b_idx[-1])
                 ir_nw_b_half = len(ir_mesh_b_idx)//2
                 for iw_idx in range(ir_nw_b_half+1):
                     wn = ir_mesh_b_idx[ir_nw_b_half+iw_idx]
-                    Pi_ir[iw_idx] = solvers[ish].Pi_dlr(iw_mesh_b(wn))
+                    Pi_ir[iw_idx] = Pi_dlr[ish](iw_mesh_b(wn))
                     W_ir[iw_idx] = solvers[ish].W_dlr(iw_mesh_b(wn))
+
     mpi.barrier()
+
+    # diis algorithm
+    if general_params['iterative_alg'] == 'cdiis' or general_params['iterative_alg'] == 'ddiis':
+        import h5py
+        if mpi.is_master_node():
+            diis_chkpt = general_params['jobname'] + "/diis.h5"
+            # calculate current residuals
+            if os.path.exists(diis_chkpt):
+                with h5py.File(diis_chkpt, 'r') as f:
+                    vec_size = f["vectors/space_size"][()]
+                    vec_grp = f[f"vectors/vec{vec_size-1}"]
+                    res_Vhf = Vhf_imp_sIab - vec_grp["Vhf_imp_sIab"][()]
+                    res_Sigma = Sigma_ir - vec_grp["Sigma_imp_wsIab"][()]
+            else:
+                with h5py.File(gw_params['h5_file'], 'r') as f:
+                    iter_grp = f[f"downfold_1e/iter{iteration}"]
+                    res_Vhf = Vhf_imp_sIab - iter_grp["Vhf_dc_sIab"][()].view(complex)[..., 0]
+                    res_Sigma = Sigma_ir - iter_grp["Sigma_dc_wsIab"][()].view(complex)[..., 0]
+            current_res = np.concatenate([res_Vhf.flatten(), res_Sigma.flatten()])
+
+            if iteration >= general_params['diis_start']:
+                # growing vector/residual spaces and then diis extrapolation
+                IterSCF.diis(current_res,
+                             {"Vhf_imp_sIab": Vhf_imp_sIab, "Sigma_imp_wsIab": Sigma_ir},
+                             diis_subspace=general_params['diis_subspace'],
+                             diis_restart=general_params['diis_restart'],
+                             current_iter=iteration, extrplt=True, diis_chkpt=diis_chkpt)
+            else:
+                # growing vector/residual spaces only
+                IterSCF.diis(current_res,
+                             {"Vhf_imp_sIab": Vhf_imp_sIab, "Sigma_imp_wsIab": Sigma_ir},
+                             diis_subspace=general_params['diis_subspace'],
+                             diis_restart=general_params['diis_restart'],
+                             current_iter=iteration, extrplt=False, diis_chkpt=diis_chkpt)
+                # mixing
+                IterSCF.damping(gw_params['h5_file'], iteration, general_params['sigma_mix'],
+                                {"Vhf_imp_sIab": Vhf_imp_sIab, "Sigma_imp_wsIab": Sigma_ir})
+        mpi.barrier()
 
     if mpi.is_master_node():
         print("\nChecking impurity self-energy on the IR mesh...")

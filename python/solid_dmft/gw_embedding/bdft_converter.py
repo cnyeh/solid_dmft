@@ -489,6 +489,11 @@ def convert_gw_output(job_h5, gw_h5, dlr_wmax=None, dlr_eps=None,
             for ir_w in range(Uloc_ir_jk.shape[0]):
                 Uloc_ir[ir_w, or1, or2, or3, or4] = Uloc_ir_jk[ir_w, or1, or3, or2, or4]
 
+        if 'Pi_dc_wabcd' in ar[f'downfold_2e/iter{it_2e}']:
+            Pi_DC_ir = ar[f'downfold_2e/iter{it_2e}']['Pi_dc_wabcd']
+        else:
+            Pi_DC_ir = np.zeros(Uloc_ir.shape)
+
         Vhf_dc_sIab = ar[f'downfold_1e/iter{it_1e}']['Vhf_dc_sIab'][0, 0]
         if 'Vhf_gw_sIab' in ar[f'downfold_1e/iter{it_1e}']:
             Vhf_sIab = ar[f'downfold_1e/iter{it_1e}']['Vhf_gw_sIab'][0, 0]
@@ -546,6 +551,7 @@ def convert_gw_output(job_h5, gw_h5, dlr_wmax=None, dlr_eps=None,
 
     (
         U_dlr_list,
+        Pi_DC_dlr_list,
         G0_dlr_list,
         delta_dlr_list,
         Gloc_dlr_list,
@@ -556,13 +562,16 @@ def convert_gw_output(job_h5, gw_h5, dlr_wmax=None, dlr_eps=None,
         Vhf_list,
         Vhf_dc_list,
         n_orb_list,
-    ) = [], [], [], [], [], [], [], [], [], [], []
+    ) = [], [], [], [], [], [], [], [], [], [], [], []
     for ish in range(gw_data['n_inequiv_shells']):
         # fit IR Uloc on DLR iw mesh
         temp = _get_dlr_from_IR(Uloc_ir*conv_fac, ir_kernel, gw_data['mesh_dlr_iw_b'], dim=4)
         Uloc_dlr = BlockGf(name_list=['up', 'down'], block_list=[temp, temp], make_copies=True)
-
         U_dlr_list.append(Uloc_dlr)
+        # in product basis
+        temp = _get_dlr_from_IR(Pi_DC_ir.reshape(-1, n_orb**2, n_orb**2)*conv_fac, ir_kernel, gw_data['mesh_dlr_iw_b'], dim=2)
+        Pi_DC_dlr = BlockGf(name_list=['up', 'down'], block_list=[temp, temp], make_copies=True)
+        Pi_DC_dlr_list.append(Pi_DC_dlr)
         V_list.append({'up': Vloc.copy()*conv_fac, 'down': Vloc*conv_fac})
         Hloc_list.append({'up': Hloc0.copy()*conv_fac, 'down': Hloc0*conv_fac})
         Vhf_list.append({'up': Vhf_sIab.copy()*conv_fac, 'down': Vhf_sIab*conv_fac})
@@ -591,6 +600,7 @@ def convert_gw_output(job_h5, gw_h5, dlr_wmax=None, dlr_eps=None,
     gw_data['Gloc_dlr'] = Gloc_dlr_list
     gw_data['Sigma_imp_DC_dlr'] = Sigma_DC_dlr_list
     gw_data['Uloc_dlr'] = U_dlr_list
+    gw_data['Pi_DC_dlr'] = Pi_DC_dlr_list
     gw_data['Vloc'] = V_list
     gw_data['Hloc0'] = Hloc_list
     gw_data['Vhf_dc'] = Vhf_dc_list

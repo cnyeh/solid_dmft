@@ -59,6 +59,10 @@ U = "<none>"
 U_crpa_threshold = 0.0
 U_prime = "<none>"
 w_range = [-10, 10]
+iterative_alg = "<none>"
+diis_subspace = "<none>"
+diis_restart = false
+diis_start = "<none>"
 
 # Keys in this section that should be passed to the triqs solver
 # explicitly need to be added to the triqs_solver_params

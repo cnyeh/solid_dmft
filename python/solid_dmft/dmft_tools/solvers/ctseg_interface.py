@@ -95,8 +95,6 @@ class CTSEGInterface(AbstractDMFTSolver):
         self.triqs_solver.Delta_tau << self.Delta_time
 
         if self.general_params['h_int_type'][self.icrsh] == 'dyn_density_density':
-            # TODO Check screening function with J(w).
-            #      Can we formally derive HF @ U(w) and then compare to my density-density approximation?
             mpi.report('\nAdding dynamic interaction from AIMBES.')
             # convert 4 idx tensor to two index tensor
             Uloc_dlr = self.gw_params['Uloc_dlr'][self.icrsh]['up']
@@ -106,6 +104,15 @@ class CTSEGInterface(AbstractDMFTSolver):
                 Uloc_dlr_idx = Uloc_dlr[coeff]
                 _, Uprime = reduce_4index_to_2index(Uloc_dlr_idx)
                 Uloc_dlr_2idx_prime[coeff] = Uprime
+
+            mpi.report("Symmetrizing the dynamic functions based on the impurity symmetry:")
+            for degsh in self.sum_k.deg_shells[self.icrsh]:
+                orb_idx = np.array([int(key.split('_')[1]) for key in degsh])
+                unique_idx = list(set(orb_idx))
+                # Average over the diagonal elements indexed by unique_idx
+                U_tmp = sum(Uloc_dlr_2idx_prime.data[:, i, i] for i in unique_idx) / len(unique_idx)
+                for i in unique_idx:
+                    Uloc_dlr_2idx_prime.data[:, i, i] = U_tmp
 
             # extract w=0 limit for analytic Sigma_Hartree for the impurity
             Uloc_w0_2idx_prime = make_gf_imfreq(Uloc_dlr_2idx_prime, n_iw=1)
@@ -519,11 +526,11 @@ class CTSEGInterface(AbstractDMFTSolver):
                 Uloc_iw_pb[i*norb+i, j*norb+j].data[:] += Vloc[i, j, i, j]
                 Uloc_iw_pb[j*norb+j, i*norb+i] << Uloc_iw_pb[i*norb+i, j*norb+j]
                 # Hund's J: Spin-flip (i, j, j, i)
-                Uloc_iw_pb[j*norb+i, j*norb+i] << Uloc_iw[i, j, j, i]
+                #Uloc_iw_pb[j*norb+i, j*norb+i] << Uloc_iw[i, j, j, i]
                 Uloc_iw_pb[j*norb+i, j*norb+i].data[:] += Vloc[i, j, j, i]
                 Uloc_iw_pb[i*norb+j, i*norb+j] << Uloc_iw_pb[j*norb+i, j*norb+i]
                 # Hund's J: Pair hopping (i, j, i, j)
-                Uloc_iw_pb[j*norb+i, i*norb+j] << Uloc_iw[i, i, j, j]
+                #Uloc_iw_pb[j*norb+i, i*norb+j] << Uloc_iw[i, i, j, j]
                 Uloc_iw_pb[j*norb+i, i*norb+j].data[:] += Vloc[i, i, j, j]
                 Uloc_iw_pb[i*norb+j, j*norb+i] << Uloc_iw_pb[j*norb+i, i*norb+j]
 
@@ -540,6 +547,17 @@ class CTSEGInterface(AbstractDMFTSolver):
             pi_iw_pb[iwn] = np.linalg.pinv(denom) @ nn_iw_pb[iwn]
             # explicit set Pi(iw).imag = 0.0
             pi_iw_pb[iwn].imag = 0.0
+
+        # symmetrize polarizability again
+        mpi.report(f"Symmetrizing the diagonal density-density polarizability among orbitals.")
+        for degsh in self.sum_k.deg_shells[ish]:
+            orb_idx = np.array([int(key.split('_')[1]) for key in degsh])
+            unique_idx = list(set(orb_idx))
+
+            # Average over the diagonal elements indexed by unique_idx
+            pi_tmp = sum(pi_iw_pb.data[:, i*norb+i, i*norb+i] for i in unique_idx) / len(unique_idx)
+            for i in unique_idx:
+                pi_iw_pb.data[:, i*norb+i, i*norb+i] = pi_tmp
 
         # fit to DLR
         pi_dlr_iw = Gf(mesh=self.gw_params['mesh_dlr_iw_b'], target_shape=pi_iw_pb.target_shape)
