@@ -358,7 +358,6 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
         G_dlr_iw = [None] * sumk.n_inequiv_shells
         Sigma_dlr = [None] * sumk.n_inequiv_shells
         Sigma_dlr_iw = [None] * sumk.n_inequiv_shells
-        Pi_dlr = [None] * sumk.n_inequiv_shells
         ir_mesh_idx = ir_kernel.wn_mesh(stats='f', ir_notation=False)
         ir_mesh = (2*ir_mesh_idx+1)*np.pi/gw_params['beta']
         norb_max = max(gw_params['n_orb'])
@@ -604,8 +603,6 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
 
             # post-processing for impurity polarizability
             if solvers[ish].triqs_solver_params.get('measure_nn_tau'):
-                Pi_dlr[ish] = solvers[ish].Pi_dlr.copy()
-
                 # mixing of impurity polarizability
                 if general_params['pi_mix'] < 1.0:
                     with HDFArchive(archive, 'a') as ar:
@@ -620,15 +617,15 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
                                   'mixing polarizability with the double counting by factor {:.3f}\n'.format(
                                     general_params['pi_mix']))
                             Pi_dlr_prev = gw_params['Pi_DC_dlr'][ish]['up']
-                    Pi_dlr[ish] << (general_params['pi_mix'] * Pi_dlr[ish]
-                                    + (1 - general_params['pi_mix']) * Pi_dlr_prev)
+                    solvers[ish].Pi_dlr << (general_params['pi_mix'] * solvers[ish].Pi_dlr
+                                            + (1 - general_params['pi_mix']) * Pi_dlr_prev)
 
                 # store Pi, nn, and W on IR mesh
                 iw_mesh_b = MeshImFreq(beta=general_params['beta'], statistic='Boson', n_iw=ir_mesh_b_idx[-1])
                 ir_nw_b_half = len(ir_mesh_b_idx)//2
                 for iw_idx in range(ir_nw_b_half+1):
                     wn = ir_mesh_b_idx[ir_nw_b_half+iw_idx]
-                    Pi_ir[iw_idx] = Pi_dlr[ish](iw_mesh_b(wn))
+                    Pi_ir[iw_idx] = solvers[ish].Pi_dlr(iw_mesh_b(wn))
                     W_ir[iw_idx] = solvers[ish].W_dlr(iw_mesh_b(wn))
 
     mpi.barrier()
@@ -691,6 +688,7 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
             for ish in range(sumk.n_inequiv_shells):
                 ar['DMFT_results/it_{}'.format(iteration)][f'Sigma_dlr_{ish}'] = Sigma_dlr[ish]
                 ar['DMFT_results/it_{}'.format(iteration)][f'G_dlr_{ish}'] = G_dlr[ish]
+
 
         # write results to GW h5_file
         with HDFArchive(gw_params['h5_file'], 'a') as ar:
