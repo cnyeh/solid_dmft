@@ -140,6 +140,7 @@ off_diag_threshold = 0.0
 perform_tail_fit = false
 analytic_hf = false
 random_seed = "<none>"
+pi_zero_slope = false
 
 [[solver]]
 type = "hubbardI"
