@@ -7,10 +7,42 @@ Fourier transform on the imaginary axis based on IR basis and the sparse samplin
 """
 
 
+def set_precision(precision):
+    if isinstance(precision, str):
+        if precision == "high":
+            return 1e-15
+        elif precision == "medium":
+            return 1e-10
+        elif precision == "low":
+            return 1e-6
+        else:
+            raise ValueError("Unknown precision value: {}. ")
+    return precision
+
+
+def set_lambda(lmbda, coqui_cxx_style=False):
+    if coqui_cxx_style:
+        if lmbda <= 100:
+            return 100
+        elif lmbda > 100 and lmbda <= 1000:
+            return 1000
+        elif lmbda > 1000 and lmbda <= 10000:
+            return 10000
+        elif lmbda > 10000 and lmbda <= 100000:
+            return 100000
+        elif lmbda > 100000 and lmbda <= 1000000:
+            return 1000000
+        else:
+            raise ValueError("Invalid lambda value: {}. "
+                             "Acceptable range is [1000, 1000000]".format(lmbda))
+    return lmbda
+
+
+
 class IAFT(object):
     """
     Driver for FT on the imaginary axis.
-    Given inverse temperature, lambda and precision, the IAFT class evaluate the corresponding
+    Given inverse temperature, frequency cutoff and precision, the IAFT class evaluate the corresponding
     IR basis and sparse sampling points on-the-fly.
 
     Dependency:
@@ -20,6 +52,8 @@ class IAFT(object):
     Attributes:
     beta: float
         Inverse temperature (a.u.)
+    wmax: float
+        Frequency cutoff (a.u.)
     lmbda: float
         Dimensionless lambda parameter for constructing the IR basis
     prec: float
@@ -45,22 +79,22 @@ class IAFT(object):
     nw_b: int
         Number of bosonic frequency sampling points
     """
-    def __init__(self, beta: float, lmbda: float, prec: float = 1e-15, verbal: bool = True):
+    def __init__(self, beta: float, wmax: float, prec = 1e-15, verbose: bool = True):
         """
         :param beta: float
             Inverse temperature (a.u.)
-        :param lmbda: float
-            Lambda parameter for constructing IR basis.
+        :param wmax: float
+            Frequency cutoff (a.u.)
         :param prec: float
             Precision for IR basis
         """
-        self.beta = beta
-        self.lmbda = lmbda
-        self.prec = prec
-        self.wmax = lmbda / beta
+        self.beta  = beta
+        self.lmbda = set_lambda(wmax*beta, coqui_cxx_style=True if isinstance(prec, str) else False)
+        self.wmax  = self.lmbda / self.beta
+        self.prec  = set_precision(prec)
         self.statisics = {'f', 'b'}
 
-        self.bases = sparse_ir.FiniteTempBasisSet(beta=beta, wmax=self.wmax, eps=prec)
+        self.bases = sparse_ir.FiniteTempBasisSet(beta=self.beta, wmax=self.wmax, eps=self.prec)
         self.tau_mesh_f = self.bases.smpl_tau_f.sampling_points
         self.tau_mesh_b = self.bases.smpl_tau_b.sampling_points
         self._wn_mesh_f = self.bases.smpl_wn_f.sampling_points
@@ -84,21 +118,34 @@ class IAFT(object):
         self.Ttw_bb = np.dot(Ttl_bb, self.Tlw_bb)
         self.Twt_bb = np.dot(Twl_bb, self.Tlt_bb)
 
-        if verbal:
+        if verbose:
             print(self)
             sys.stdout.flush()
 
     def __str__(self):
         return ("Mesh details on the imaginary axis\n" \
                 "----------------------------------\n" \
+                "Intermediate Representation\n" \
                 "precision = {}\n" \
                 "beta = {}\n" \
+                "frequency cutoff = {}\n" \
                 "lambda = {}\n" \
                 "nt_f, nw_f = {}, {}\n" \
-                "nt_b, nw_b = {}, {}\n".format(self.prec, self.beta, self.lmbda, self.nt_f, self.nw_f,
-                                                self.nt_b, self.nw_b))
+                "nt_b, nw_b = {}, {}\n".format(
+            self.prec, self.beta, self.wmax, self.lmbda,
+            self.nt_f, self.nw_f, self.nt_b, self.nw_b))
 
-    def wn_mesh(self, stats: str, ir_notation: bool = True):
+    def __eq__(self, other):
+        if not isinstance(other, IAFT):
+            return NotImplemented
+
+        return (
+                self.beta == other.beta and
+                self.lmbda == other.lmbda and
+                self.prec == other.prec
+        )
+
+    def wn_mesh(self, stats: str, ir_notation: bool = True, *, positive_only=False):
         """
         Return Matsubara frequency indices.
         :param stats: str
@@ -116,7 +163,12 @@ class IAFT(object):
         wn_mesh = np.array(self._wn_mesh_f, dtype=int) if stats == 'f' else np.array(self._wn_mesh_b, dtype=int)
         if not ir_notation:
             wn_mesh = (wn_mesh-1)//2 if stats == 'f' else wn_mesh//2
-        return wn_mesh
+
+        if positive_only:
+            nw_half = wn_mesh.shape[0]//2
+            return wn_mesh[nw_half:]
+        else:
+            return wn_mesh
 
     def tau_to_w(self, Ot, stats: str):
         """
@@ -245,7 +297,29 @@ class IAFT(object):
         return Ot
 
 
-    def w_interpolate(self, Ow, wn_mesh_interp, stats: str, ir_notation: bool = True):
+    def w_interpolate(self, Ow, target, stats: str, ir_notation: bool = True):
+        """
+        Interpolate a dynamic object to arbitrary points on the Matsubara axis.
+
+        :param Ow: numpy.ndarray
+            Dynamic object on the Matsubara sampling points, self.wn_mesh.
+        :param target: IAFT or numpy.ndarray(dim=1, dtype=int)
+        :param stats: str
+            Statistics, 'f' for fermions and 'b' for bosons.
+        :param ir_notation: bool
+            Whether wn_mesh_interp is in sparse_ir notation where iwn = n*pi/beta for both fermions and bosons.
+            Otherwise, iwn = (2n+1)*pi/beta  for fermions and 2n*pi/beta for bosons.
+
+        :return: numpy.ndarray
+            Matsubara-frequency object with dimensions (nw_interp, ...)
+        """
+        if isinstance(target, IAFT):
+            return self._w_interpolate(Ow, target.wn_mesh(stats, ir_notation), stats, ir_notation)
+        else:
+            return self._w_interpolate(Ow, target, stats, ir_notation)
+
+
+    def _w_interpolate(self, Ow, wn_mesh_interp, stats: str, ir_notation: bool = True):
         """
         Interpolate a dynamic object to arbitrary points on the Matsubara axis.
 
@@ -286,7 +360,33 @@ class IAFT(object):
         Ow_interp = Ow_interp.reshape((wn_indices.shape[0],) + Ow_shape[1:])
         return Ow_interp
 
-    def w_interpolate_phsym(self, Ow, wn_mesh_interp, stats: str, ir_notation: bool = True):
+
+    def w_interpolate_phsym(self, Ow, target, stats: str, ir_notation: bool = True):
+        """
+        Interpolate a dynamic object to arbitrary points on the Matsubara axis.
+
+        :param Ow: numpy.ndarray
+            Dynamic object on the Matsubara sampling points, self.wn_mesh.
+        :param target: IAFT or numpy.ndarray(dim=1, dtype=int)
+            Target frequencies "INDICES".
+            The physical Matsubara frequencies are wn_mesh_interp * pi/beta.
+        :param stats: str
+            Statistics, 'f' for fermions and 'b' for bosons.
+        :param ir_notation: bool
+            Whether wn_mesh_interp is in sparse_ir notation where iwn = n*pi/beta for both fermions and bosons.
+            Otherwise, iwn = (2n+1)*pi/beta  for fermions and 2n*pi/beta for bosons.
+
+        :return: numpy.ndarray
+            Matsubara-frequency object with dimensions (nw_interp, ...)
+        """
+        if isinstance(target, IAFT):
+            nw_half_offset = target.nw_b // 2
+            iw_mesh = target.wn_mesh(stats, ir_notation)[nw_half_offset:]
+            return self._w_interpolate_phsym(Ow, iw_mesh, stats, ir_notation)
+        else:
+            return self._w_interpolate_phsym(Ow, target, stats, ir_notation)
+
+    def _w_interpolate_phsym(self, Ow, wn_mesh_interp, stats: str, ir_notation: bool = True):
         """
         Interpolate a dynamic object to arbitrary points on the Matsubara axis.
 
@@ -336,7 +436,8 @@ class IAFT(object):
         Ow_interp = Ow_interp.reshape((wn_indices.shape[0],) + Ow_shape[1:])
         return Ow_interp
 
-    def tau_interpolate(self, Ot, tau_mesh_interp, stats: str):
+
+    def _tau_interpolate(self, Ot, tau_mesh_interp, stats: str):
         """
          Interpolate a dynamic object to arbitrary points on the imaginary-time axis.
 
@@ -369,7 +470,28 @@ class IAFT(object):
         Ot_interp = Ot_interp.reshape((np.shape(tau_mesh_interp)[0],) + Ot_shape[1:])
         return Ot_interp
 
-    def tau_interpolate_phsym(self, Ot, tau_mesh_interp, stats: str):
+
+    def tau_interpolate(self, Ot, target, stats: str):
+        """
+         Interpolate a dynamic object to arbitrary points on the imaginary-time axis.
+
+        :param Ot: numpy.ndarray
+            Dynamic object on the imaginary-time sampling points, self.tau_mesh.
+        :param tau_mesh_interp: numpy.ndarray(dim=1, dtype=float)
+            Target tau points.
+        :param stats: str
+            Statistics, 'f' for fermions and 'b' for bosons
+
+        :return: numpy.ndarray
+            Imaginary-time object with dimensions (nt_interp, ...)
+        """
+        if isinstance(target, IAFT):
+            return self._tau_interpolate(Ot, target.tau_mesh_f if stats=='f' else target.tau_mesh_b, stats)
+        else:
+            return self._tau_interpolate(Ot, target, stats)
+
+
+    def _tau_interpolate_phsym(self, Ot, tau_mesh_interp, stats: str):
         """
          Interpolate a dynamic object to arbitrary points on the imaginary-time axis.
 
@@ -410,9 +532,31 @@ class IAFT(object):
         Ot_interp = Ot_interp.reshape((np.shape(tau_mesh_interp)[0],) + Ot_shape[1:])
         return Ot_interp
 
+
+    def tau_interpolate_phsym(self, Ot, target, stats: str):
+        """
+         Interpolate a dynamic object to arbitrary points on the imaginary-time axis.
+
+        :param Ot: numpy.ndarray
+            Dynamic object on the imaginary-time sampling points, self.tau_mesh.
+        :param tau_mesh_interp: numpy.ndarray(dim=1, dtype=float)
+            Target tau points.
+        :param stats: str
+            Statistics, 'f' for fermions and 'b' for bosons
+
+        :return: numpy.ndarray
+            Imaginary-time object with dimensions (nt_interp, ...)
+        """
+        if isinstance(target, IAFT):
+            nt_half_target = target.nt_b // 2 if target.nt_b % 2 == 0 else target.nt_b // 2 + 1
+            return self._tau_interpolate_phsym(Ot, target.tau_mesh_b[:nt_half_target], stats)
+        else:
+            return self._tau_interpolate_phsym(Ot, target, stats)
+
+
     def check_leakage(self, Ot, stats: str, name: str = "", w_input: bool = False):
         """
-        Check decay of the IR coefficients to assess the quality of IR basis for the beta and lambda.
+        Check decay of the IR coefficients to assess the quality of IR basis for the beta and wmax.
         The coefficients should decay exponentially, and the leakage is defined as:
             leakage = the smallest coefficients / the largest coefficients
         :param Ot:
@@ -444,14 +588,14 @@ class IAFT(object):
 
         leakage = coeff_last/coeff_first
         print("IAFT leakage of {}: {}".format(name, leakage))
-        if leakage >= 1e-8:
-            print("[WARNING] check_leakage: coeff_last/coeff_first = {} >= 1e-8; "
+        if leakage >= 1e-5:
+            print("[WARNING] check_leakage: coeff_last/coeff_first = {} >= 1e-5; "
                   "coeff_last = {}, coeff_first = {}".format(leakage, coeff_last, coeff_first))
         sys.stdout.flush()
 
     def check_leakage_phsym(self, Ot, stats: str, name: str = "", w_input: bool = False):
         """
-        Check decay of the IR coefficients to assess the quality of IR basis for the beta and lambda.
+        Check decay of the IR coefficients to assess the quality of IR basis for the beta and wmax.
         The coefficients should decay exponentially, and the leakage is defined as:
             leakage = the smallest coefficients / the largest coefficients
         :param Ot:
@@ -472,9 +616,8 @@ class IAFT(object):
             raise ValueError("Unknown statistics '{}'. "
                              "Acceptable options are 'f' for fermion and 'b' for bosons.".format(stats))
 
-        nw_half = self.nw_b // 2
         nts = self.nt_b
-        nt_half = self.nt_b // 2
+        nt_half = self.nt_b // 2 if self.nt_b % 2 == 0 else self.nt_b // 2 + 1
         Tlt = self.Tlt_bb
         if nt_half != Ot.shape[0]:
             raise ValueError("Inconsistency between nts_half = {} and Ot.shape[0] = {}".format(nt_half, Ot.shape[0]))
@@ -499,15 +642,15 @@ class IAFT(object):
 
         leakage = coeff_last/coeff_first
         print("IAFT leakage of {}: {}".format(name, leakage))
-        if leakage >= 1e-8:
-            print("[WARNING] check_leakage_phsym: coeff_last/coeff_first = {} >= 1e-8; "
+        if leakage >= 1e-5:
+            print("[WARNING] check_leakage_phsym: coeff_last/coeff_first = {} >= 1e-5; "
                   "coeff_last = {}, coeff_first = {}".format(leakage, coeff_last, coeff_first))
         sys.stdout.flush()
 
 
 if __name__ == '__main__':
     # Initialize IAFT object for given inverse temperature, lambda and precision
-    ft = IAFT(1000, 1e4, 1e-6)
+    ft = IAFT(1000.0, 10.0, 1e-6)
 
     print(ft.wn_mesh('f', True))
 

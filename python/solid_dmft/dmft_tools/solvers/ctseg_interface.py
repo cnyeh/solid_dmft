@@ -15,15 +15,16 @@ from solid_dmft.io_tools.dict_to_h5 import prep_params_for_h5
 from solid_dmft.dmft_tools import legendre_filter
 from solid_dmft.dmft_tools.matheval import MathExpr
 
-
 #  import of the abstract class
 from solid_dmft.dmft_tools.solvers.abstractdmftsolver import AbstractDMFTSolver
 from solid_dmft.dmft_tools import common
 
-
 # import triqs solver
 from triqs_ctseg import Solver as ctseg_solver
 from triqs_ctseg.version import triqs_ctseg_hash, version
+
+# pre-/post-processing utilities
+from solid_dmft.gw_embedding.utils import causal_projection
 
 
 class CTSEGInterface(AbstractDMFTSolver):
@@ -98,36 +99,50 @@ class CTSEGInterface(AbstractDMFTSolver):
             mpi.report('\nAdding dynamic interaction from AIMBES.')
             # convert 4 idx tensor to two index tensor
             Uloc_dlr = self.gw_params['Uloc_dlr'][self.icrsh]['up']
-            Uloc_dlr_2idx_prime = Gf(mesh=Uloc_dlr.mesh, target_shape=[Uloc_dlr.target_shape[0], Uloc_dlr.target_shape[1]])
+            self.Uloc_dlr_2idx = Gf(mesh=Uloc_dlr.mesh, target_shape=[Uloc_dlr.target_shape[0], Uloc_dlr.target_shape[1]])
 
             for coeff in Uloc_dlr.mesh:
                 Uloc_dlr_idx = Uloc_dlr[coeff]
                 _, Uprime = reduce_4index_to_2index(Uloc_dlr_idx)
-                Uloc_dlr_2idx_prime[coeff] = Uprime
+                self.Uloc_dlr_2idx[coeff] = Uprime
+
+            if self.solver_params['u_causal_fit']:
+                if mpi.is_master_node():
+                    mpi.report("Applying causal projection to bosonic Weiss field.")
+                    Uloc_iw_2idx = make_gf_dlr_imfreq(self.Uloc_dlr_2idx)
+                    mesh_iw = np.array([p.value for p in Uloc_iw_2idx.mesh.values()])
+                    Uloc_iw_2idx.data[:] = causal_projection(
+                        Uloc_iw_2idx.data, mesh_iw,
+                        statistics="boson", name="U weiss field",
+                        Np=self.solver_params['bosonic_bath_per_orbital']
+                    )
+                    Uloc_iw_2idx.data[:].imag = 0.0
+                    self.Uloc_dlr_2idx = make_gf_dlr(Uloc_iw_2idx)
+                self.Uloc_dlr_2idx = mpi.bcast(self.Uloc_dlr_2idx)
 
             mpi.report("Symmetrizing the dynamic functions based on the impurity symmetry:")
             for degsh in self.sum_k.deg_shells[self.icrsh]:
                 orb_idx = np.array([int(key.split('_')[1]) for key in degsh])
                 unique_idx = list(set(orb_idx))
                 # Sum over the diagonal and off-diagonal elements indexed by unique_idx separately
-                U_tmp_diag = sum(Uloc_dlr_2idx_prime.data[:, i, i] for i in unique_idx)
-                U_tmp_off = sum(Uloc_dlr_2idx_prime.data[:, i, j] for i, j in product(unique_idx, repeat=2)) - U_tmp_diag
+                U_tmp_diag = sum(self.Uloc_dlr_2idx.data[:, i, i] for i in unique_idx)
+                U_tmp_off = sum(self.Uloc_dlr_2idx.data[:, i, j] for i, j in product(unique_idx, repeat=2)) - U_tmp_diag
                 U_tmp_diag /= len(unique_idx)
                 U_tmp_off /= (len(unique_idx)*(len(unique_idx)-1))
                 for i, j in product(unique_idx, repeat=2):
                     if i == j:
-                        Uloc_dlr_2idx_prime.data[:, i, i] = U_tmp_diag
+                        self.Uloc_dlr_2idx.data[:, i, i] = U_tmp_diag
                     else:
-                        Uloc_dlr_2idx_prime.data[:, i, j] = U_tmp_off
+                        self.Uloc_dlr_2idx.data[:, i, j] = U_tmp_off
 
             # extract w=0 limit for analytic Sigma_Hartree for the impurity
-            Uloc_w0_2idx_prime = make_gf_imfreq(Uloc_dlr_2idx_prime, n_iw=1)
+            Uloc_w0_2idx_prime = make_gf_imfreq(self.Uloc_dlr_2idx, n_iw=1)
             self.Uw0_prime = Uloc_w0_2idx_prime.data[0].real
             mpi.report('Screened interaction U(iw) at iw=0 w/o the shift of V_bare (density-density only): ')
             mpi.report(self.Uw0_prime)
 
             # create full frequency objects
-            Uloc_tau_2idx_prime = make_gf_imtime(Uloc_dlr_2idx_prime, n_tau=self.solver_params['n_tau_bosonic'])
+            Uloc_tau_2idx_prime = make_gf_imtime(self.Uloc_dlr_2idx, n_tau=self.solver_params['n_tau_bosonic'])
 
             # fill D0_tau from Uloc_tau_2idx and Uloc_tau_2idx_prime
             ish = self.sum_k.inequiv_to_corr[self.icrsh]
@@ -158,7 +173,7 @@ class CTSEGInterface(AbstractDMFTSolver):
                 archive['DMFT_input/solver/it_-1'][f'triqs_solver_params_{self.icrsh}'] = prep_params_for_h5(self.triqs_solver_params)
                 archive['DMFT_input/solver/it_-1']['mpi_size'] = mpi.size
                 if self.general_params['h_int_type'][self.icrsh] == 'dyn_density_density':
-                    archive['DMFT_input/solver/it_-1'][f'Uloc_dlr_2idx_prime_{self.icrsh}'] = Uloc_dlr_2idx_prime
+                    archive['DMFT_input/solver/it_-1'][f'Uloc_dlr_2idx_{self.icrsh}'] = self.Uloc_dlr_2idx
         mpi.barrier()
 
         # Solve the impurity problem for icrsh shell
@@ -447,7 +462,6 @@ class CTSEGInterface(AbstractDMFTSolver):
         mpi.report('\nPost-processing the density-density susceptibility to obtain the impurity polarizability.')
 
         nn_tau = self.triqs_solver.results.nn_tau
-        nn_static = self.triqs_solver.results.nn_static
         ish = self.sum_k.inequiv_to_corr[self.icrsh]
         norb = common.get_n_orbitals(self.sum_k)[ish]['up']
         norb2 = norb * norb
@@ -518,6 +532,19 @@ class CTSEGInterface(AbstractDMFTSolver):
             self.nn_freq << Fourier(self.nn_time, nn_known_moments)
         self.nn_freq << mpi.bcast(self.nn_freq)
 
+        #if self.solver_params["u_causal_fit"]:
+        #    nn_dlr_iw = make_gf_dlr_imfreq(self.Uloc_dlr_2idx)
+        #    nn_dlr_iw.zero()
+        #    for i, iwn in enumerate(nn_dlr_iw.mesh):
+        #        data_idx = self.nn_freq.mesh.to_data_index(iwn.index)
+        #        nn_dlr_iw.data[i] = self.nn_freq.data[data_idx]
+
+        #    mesh_iw = np.array([p.value for p in nn_dlr_iw.mesh.values()])
+        #    nn_dlr_iw.data[:].imag = 0.0
+        #    nn_dlr_iw.data[:] = causal_projection(nn_dlr_iw.data, mesh_iw,
+        #                      statistics="boson", name="density-density susceptibility", Np=6)
+        #    self.nn_freq = make_gf_imfreq(nn_dlr_iw, n_iw=self.general_params['n_iw'])
+
         # from density-density basis to product basis
         nn_iw_pb = Gf(mesh=self.nn_freq.mesh, target_shape=[norb2, norb2])
         for i, j in product(range(norb), repeat=2):
@@ -529,17 +556,17 @@ class CTSEGInterface(AbstractDMFTSolver):
 
         # Screened Coulomb interaction in the product basis set
         Vloc = self.gw_params['Vloc'][self.icrsh]['up']
-        Uloc_iw = make_gf_imfreq(self.gw_params['Uloc_dlr'][self.icrsh]['up'], n_iw=self.general_params['n_iw'])
+        Uloc_iw = make_gf_imfreq(self.Uloc_dlr_2idx, n_iw=self.general_params['n_iw'])
         Uloc_iw_pb = Gf(mesh=Uloc_iw.mesh, target_shape=[norb2, norb2])
         # Uloc_iw and Vloc follow triqs notation for Coulomb interactions
         for i, j in product(range(norb), repeat=2):
             if i == j:
                 # intra-orbital density-density term
-                Uloc_iw_pb[i*norb+i, i*norb+i] << Uloc_iw[i, i, i, i]
+                Uloc_iw_pb[i*norb+i, i*norb+i] << Uloc_iw[i, i]
                 Uloc_iw_pb[i*norb+i, i*norb+i].data[:] += Vloc[i, i, i, i]
             if i > j:
                 # inter-orbital density-density term
-                Uloc_iw_pb[i*norb+i, j*norb+j] << Uloc_iw[i, j, i, j]
+                Uloc_iw_pb[i*norb+i, j*norb+j] << Uloc_iw[i, j]
                 Uloc_iw_pb[i*norb+i, j*norb+j].data[:] += Vloc[i, j, i, j]
                 Uloc_iw_pb[j*norb+j, i*norb+i] << Uloc_iw_pb[i*norb+i, j*norb+j]
                 # Hund's J: Spin-flip (i, j, j, i)
@@ -600,6 +627,40 @@ class CTSEGInterface(AbstractDMFTSolver):
             pi_dlr_iw[w] = pi_iw_pb(w)
         self.Pi_dlr = make_gf_dlr(pi_dlr_iw)
 
+        if self.solver_params['u_causal_fit']:
+            if mpi.is_master_node():
+                # extract density-density contribution
+                Pi_dd_dlr = self.Uloc_dlr_2idx.copy()
+                Pi_dd_dlr.zero()
+                for i, j in product(range(norb), repeat=2):
+                    Pi_dd_dlr.data[:,i,j] = self.Pi_dlr.data[:,i*norb+i, j*norb+j]
+
+                # causal projection
+                Pi_dd_dlr_iw = make_gf_dlr_imfreq(Pi_dd_dlr)
+                Pi_dd_dlr_iw.data[:].imag = 0.0
+                mesh_iw = np.array([p.value for p in Pi_dd_dlr_iw.mesh.values()])
+                if self.solver_params['causal_fit_exclude_w0']:
+                    mask = mesh_iw != 0.0
+                    pi_input = Pi_dd_dlr_iw.data[mask]
+                    iw_input = mesh_iw[mask]
+                else:
+                    pi_input = Pi_dd_dlr_iw.data[:]
+                    iw_input = mesh_iw
+
+                Pi_dd_dlr_iw.data[:] = causal_projection(
+                    pi_input, iw_input,
+                    statistics="boson", name="impurity polarizability",
+                    Np=self.solver_params['bosonic_bath_per_orbital'],
+                    iw_mesh_out=mesh_iw
+                )
+                Pi_dd_dlr_iw.data[:].imag = 0.0
+
+                # overwrite "Pi_dlr_pb"
+                Pi_dd_dlr = make_gf_dlr(Pi_dd_dlr_iw)
+                for i, j in product(range(norb), repeat=2):
+                    self.Pi_dlr.data[:, i*norb+i, j*norb+j] = Pi_dd_dlr.data[:,i,j]
+            self.Pi_dlr << mpi.bcast(self.Pi_dlr)
+
         # Screened interaction W(w) = U(w) - U(w) * Chi(w) * U(w)
         W_iw_pb = Gf(mesh=nn_iw_pb.mesh, target_shape=nn_iw_pb.target_shape)
         for iwn in nn_iw_pb.mesh:
@@ -624,4 +685,26 @@ class CTSEGInterface(AbstractDMFTSolver):
         W_dlr_iw = Gf(mesh=self.gw_params['mesh_dlr_iw_b'], target_shape=pi_iw_pb.target_shape)
         for w in W_dlr_iw.mesh:
             W_dlr_iw[w] = W_iw_pb(w)
+
+        if self.solver_params['u_causal_fit']:
+            if mpi.is_master_node():
+                # extract density-density contribution
+                W_dd_dlr_iw = Gf(mesh=self.gw_params['mesh_dlr_iw_b'], target_shape=[norb, norb])
+                for i, j in product(range(norb), repeat=2):
+                    W_dd_dlr_iw.data[:,i,j] = W_dlr_iw.data[:, i*norb+i, j*norb+j]
+
+                # causal projection
+                mesh_iw = np.array([p.value for p in W_dd_dlr_iw.mesh.values()])
+                W_dd_dlr_iw.data[:] = causal_projection(
+                    W_dd_dlr_iw.data, mesh_iw,
+                    statistics="boson", name="impurity screened interaction",
+                    Np=self.solver_params['bosonic_bath_per_orbital']
+                )
+                W_dd_dlr_iw.data[:].imag = 0.0
+
+                # overwrite "W_dlr_iw_pb"
+                for i, j in product(range(norb), repeat=2):
+                    W_dlr_iw.data[:, i*norb+i, j*norb+j] = W_dd_dlr_iw.data[:,i,j]
+            W_dlr_iw = mpi.bcast(W_dlr_iw)
+
         self.W_dlr = make_gf_dlr(W_dlr_iw)

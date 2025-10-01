@@ -264,7 +264,9 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
             it_1e = gw_params['it_1e'],
             it_2e = gw_params['it_2e'],
             delta_calc_type = gw_params['delta_calc_type'],
-            delta_bath_fit = gw_params['delta_bath_fit']
+            delta_causal_fit = gw_params['delta_causal_fit'],
+            u_zero_slope=gw_params['u_zero_slope'],
+            ha_ev_conv = False
         )
         gw_params.update(gw_data)
     mpi.barrier()
@@ -280,6 +282,9 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
                    f"general_params['n_iw'] = {general_params['n_iw']} < maximum DLRImFreq index ({max_idx}). "
                    f"solid_dmft will automatically set general_params['n_iw'] = {max_idx+1}.\n")
         general_params['n_iw'] = int(max_idx + 1)
+    elif max_idx <= general_params['n_iw']:
+        mpi.report(f"\ngeneral_params['n_iw'] = {general_params['n_iw']} >= maximum DLRImFreq index ({max_idx}). "
+                   "This is probably overkill and perhaps you can consider reducing general_params['n_iw'].\n")
 
     general_params['beta'] = gw_params['beta']
     sumk_mesh = MeshImFreq(beta=general_params['beta'], statistic='Fermion', n_iw=general_params['n_iw'])
