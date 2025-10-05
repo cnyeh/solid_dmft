@@ -579,7 +579,7 @@ class CTSEGInterface(AbstractDMFTSolver):
                 Uloc_iw_pb[i*norb+j, j*norb+i] << Uloc_iw_pb[j*norb+i, i*norb+j]
 
 
-        # Dyson equation: Pi(w) = [U(w)*Chi(w) - I]^-1 * Chi(w)
+        # Dyson equation: Pi(w) = Chi(w) * [U(w)*Chi(w) - I]^-1
         mpi.report("Dyson equation for impurity polarizability")
         pi_iw_pb = Gf(mesh=nn_iw_pb.mesh, target_shape=nn_iw_pb.target_shape)
         ones = np.eye(norb2, dtype=complex)
@@ -591,7 +591,7 @@ class CTSEGInterface(AbstractDMFTSolver):
                 mpi.report(f"WARNING: Large condition number for [U(w) * Chi(w) - I] = {cond} at n = {iwn.index}.")
                 #           f"The matrix will be regularized by adding {epsilon} to the diagonals.")
                 #denom += epsilon * ones
-            pi_iw_pb[iwn] = np.linalg.pinv(denom) @ nn_iw_pb[iwn]
+            pi_iw_pb[iwn] = nn_iw_pb[iwn] @ np.linalg.pinv(denom)
             # explicit set Pi(iw).imag = 0.0
             pi_iw_pb[iwn].imag = 0.0
 

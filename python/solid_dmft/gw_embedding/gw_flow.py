@@ -259,13 +259,8 @@ def embedding_driver(general_params, solver_params, gw_params, advanced_params):
     if mpi.is_master_node():
         gw_data, ir_kernel = convert_gw_output(
             general_params['jobname'] + '/' + general_params['seedname'] + '.h5',
-            gw_params['h5_file'],
+            gw_params,
             general_params['dlr_wmax'], general_params['dlr_eps'],
-            it_1e = gw_params['it_1e'],
-            it_2e = gw_params['it_2e'],
-            delta_calc_type = gw_params['delta_calc_type'],
-            delta_causal_fit = gw_params['delta_causal_fit'],
-            u_zero_slope=gw_params['u_zero_slope'],
             ha_ev_conv = False
         )
         gw_params.update(gw_data)

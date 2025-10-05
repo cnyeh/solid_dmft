@@ -48,11 +48,9 @@ from solid_dmft.gw_embedding.iaft import IAFT, set_precision
 HARTREE_EV = physical_constants['Hartree energy in eV'][0]
 
 
-def convert_gw_output(job_h5, gw_h5, dlr_wmax=None, dlr_eps=None,
-                      it_1e=0, it_2e=0,
-                      delta_calc_type="tail_fit", delta_causal_fit=False,
-                      u_zero_slope=False,
-                      ha_ev_conv = False):
+def convert_gw_output(job_h5, gw_params,
+                      dlr_wmax=None, dlr_eps=None,
+                      ha_ev_conv=False):
     """
     read bdft output and convert to triqs Gf DLR objects
 
@@ -82,6 +80,13 @@ def convert_gw_output(job_h5, gw_h5, dlr_wmax=None, dlr_eps=None,
     ir_kernel: sparse_ir kernel object
         IR kernel with AIMBES paramaters
     """
+
+    gw_h5            = gw_params['h5_file']
+    it_1e, it_2e     = gw_params['it_1e'], gw_params['it_2e']
+    delta_calc_type  = gw_params['delta_calc_type']
+    delta_causal_fit = gw_params['delta_causal_fit']
+    u_zero_slope     = gw_params['u_zero_slope']
+    use_w_loc        = gw_params['use_w_loc']
 
     gw_data = {}
 
