@@ -140,10 +140,13 @@ off_diag_threshold = 0.0
 perform_tail_fit = false
 analytic_hf = false
 random_seed = "<none>"
-pi_zero_slope = false
 u_causal_fit = false
-bosonic_bath_per_orbital = 10
-causal_fit_exclude_w0 = false
+u_bath_per_orbital = 10
+u_fit_exclude_w0 = false
+pi_causal_fit = false
+pi_bath_per_orbital = 10
+pi_zero_slope = false
+pi_fit_exclude_w0 = false
 
 [[solver]]
 type = "hubbardI"
@@ -211,6 +214,7 @@ it_1e = 0
 it_2e = 0
 delta_calc_type = "tail_fit"
 delta_causal_fit = false
+delta_bath_per_orbital = 8
 u_zero_slope = false
 
 [advanced]

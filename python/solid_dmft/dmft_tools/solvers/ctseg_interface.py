@@ -111,10 +111,20 @@ class CTSEGInterface(AbstractDMFTSolver):
                     mpi.report("Applying causal projection to bosonic Weiss field.")
                     Uloc_iw_2idx = make_gf_dlr_imfreq(self.Uloc_dlr_2idx)
                     mesh_iw = np.array([p.value for p in Uloc_iw_2idx.mesh.values()])
+
+                    if self.solver_params['u_fit_exclude_w0']:
+                        mask = mesh_iw != 0.0
+                        u_input = Uloc_iw_2idx.data[mask]
+                        iw_input = mesh_iw[mask]
+                    else:
+                        u_input = Uloc_iw_2idx.data[:]
+                        iw_input = mesh_iw
+
                     Uloc_iw_2idx.data[:] = causal_projection(
-                        Uloc_iw_2idx.data, mesh_iw,
+                        u_input, iw_input,
                         statistics="boson", name="U weiss field",
-                        Np=self.solver_params['bosonic_bath_per_orbital']
+                        Np=self.solver_params['u_bath_per_orbital'],
+                        iw_mesh_out=mesh_iw
                     )
                     Uloc_iw_2idx.data[:].imag = 0.0
                     self.Uloc_dlr_2idx = make_gf_dlr(Uloc_iw_2idx)
@@ -532,7 +542,7 @@ class CTSEGInterface(AbstractDMFTSolver):
             self.nn_freq << Fourier(self.nn_time, nn_known_moments)
         self.nn_freq << mpi.bcast(self.nn_freq)
 
-        #if self.solver_params["u_causal_fit"]:
+        #if self.solver_params["pi_causal_fit"]:
         #    nn_dlr_iw = make_gf_dlr_imfreq(self.Uloc_dlr_2idx)
         #    nn_dlr_iw.zero()
         #    for i, iwn in enumerate(nn_dlr_iw.mesh):
@@ -627,7 +637,7 @@ class CTSEGInterface(AbstractDMFTSolver):
             pi_dlr_iw[w] = pi_iw_pb(w)
         self.Pi_dlr = make_gf_dlr(pi_dlr_iw)
 
-        if self.solver_params['u_causal_fit']:
+        if self.solver_params['pi_causal_fit']:
             if mpi.is_master_node():
                 # extract density-density contribution
                 Pi_dd_dlr = self.Uloc_dlr_2idx.copy()
@@ -639,7 +649,7 @@ class CTSEGInterface(AbstractDMFTSolver):
                 Pi_dd_dlr_iw = make_gf_dlr_imfreq(Pi_dd_dlr)
                 Pi_dd_dlr_iw.data[:].imag = 0.0
                 mesh_iw = np.array([p.value for p in Pi_dd_dlr_iw.mesh.values()])
-                if self.solver_params['causal_fit_exclude_w0']:
+                if self.solver_params['pi_fit_exclude_w0']:
                     mask = mesh_iw != 0.0
                     pi_input = Pi_dd_dlr_iw.data[mask]
                     iw_input = mesh_iw[mask]
@@ -650,7 +660,7 @@ class CTSEGInterface(AbstractDMFTSolver):
                 Pi_dd_dlr_iw.data[:] = causal_projection(
                     pi_input, iw_input,
                     statistics="boson", name="impurity polarizability",
-                    Np=self.solver_params['bosonic_bath_per_orbital'],
+                    Np=self.solver_params['pi_bath_per_orbital'],
                     iw_mesh_out=mesh_iw
                 )
                 Pi_dd_dlr_iw.data[:].imag = 0.0
@@ -686,7 +696,7 @@ class CTSEGInterface(AbstractDMFTSolver):
         for w in W_dlr_iw.mesh:
             W_dlr_iw[w] = W_iw_pb(w)
 
-        if self.solver_params['u_causal_fit']:
+        if self.solver_params['pi_causal_fit']:
             if mpi.is_master_node():
                 # extract density-density contribution
                 W_dd_dlr_iw = Gf(mesh=self.gw_params['mesh_dlr_iw_b'], target_shape=[norb, norb])
@@ -698,7 +708,7 @@ class CTSEGInterface(AbstractDMFTSolver):
                 W_dd_dlr_iw.data[:] = causal_projection(
                     W_dd_dlr_iw.data, mesh_iw,
                     statistics="boson", name="impurity screened interaction",
-                    Np=self.solver_params['bosonic_bath_per_orbital']
+                    Np=self.solver_params['pi_bath_per_orbital']
                 )
                 W_dd_dlr_iw.data[:].imag = 0.0
 

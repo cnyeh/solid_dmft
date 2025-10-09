@@ -86,7 +86,6 @@ def convert_gw_output(job_h5, gw_params,
     delta_calc_type  = gw_params['delta_calc_type']
     delta_causal_fit = gw_params['delta_causal_fit']
     u_zero_slope     = gw_params['u_zero_slope']
-    use_w_loc        = gw_params['use_w_loc']
 
     gw_data = {}
 
@@ -202,9 +201,9 @@ def convert_gw_output(job_h5, gw_params,
                                                              wmax_imp=dlr_wmax, eps_imp=dlr_eps)
     if delta_causal_fit:
         delta_wsIab = causal_projection(
-            delta_wsIab, ir_imp_kernel.wn_mesh('f')*np.pi/ir_imp_kernel.beta,
+            delta_wsIab, 1j*ir_imp_kernel.wn_mesh('f')*np.pi/ir_imp_kernel.beta,
             statistics="fermion", name="hybridization",
-            Np=8
+            Np=gw_params['delta_bath_per_orbital']
         )
 
     Hloc0 = Hloc0[0,0]
