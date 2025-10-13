@@ -106,7 +106,7 @@ def estimate_zero_moment(Aw, iw_mesh):
     return t
 
 
-def extract_h0_and_delta(g_weiss_wsab, ir_kernel, high_freq_multiplier=10):
+def extract_h0_and_delta(g_weiss_wsIab, ir_kernel, high_freq_multiplier=10):
     """
     Estimate the static one-body term h₀ (as t_sIab) and the hybridization function Δ(iω)
     from a Weiss Green's function G₀(iω) sampled on a fermionic Matsubara mesh.
@@ -141,28 +141,30 @@ def extract_h0_and_delta(g_weiss_wsab, ir_kernel, high_freq_multiplier=10):
     -----
     - Accuracy of `t_sIab_estimate` depends on how large the interpolated frequencies are.
     """
-    nspin = g_weiss_wsab.shape[1]
+    nspin, nImp = g_weiss_wsIab.shape[1:3]
 
     # 1) Interpolate G0 to very high fermionic frequencies to improve the accuracy of high-frequency fitting
     iwn_interp = ir_kernel.wn_mesh('f', ir_notation=False)[-3:] * high_freq_multiplier
-    g_weiss_interp = ir_kernel.w_interpolate(g_weiss_wsab, iwn_interp, 'f', ir_notation=False)
+    g_weiss_interp = ir_kernel.w_interpolate(g_weiss_wsIab, iwn_interp, 'f', ir_notation=False)
     iwn_interp = (2 * iwn_interp.astype(float) + 1) * np.pi / ir_kernel.beta
     weiss_tmp = np.zeros(g_weiss_interp.shape, dtype=complex)
     for n, g in enumerate(g_weiss_interp):
         for s in range(nspin):
-            weiss_tmp[n, s] = 1j * iwn_interp[n] - np.linalg.inv(g[s])
+            for I in range(nImp):
+                weiss_tmp[n,s,I] = 1j * iwn_interp[n] - np.linalg.inv(g[s,I])
 
     # 2) Fitting the zeroth moment as the non-interacting Hamiltonian
     t_sIab_estimate = estimate_zero_moment(weiss_tmp, iwn_interp)
 
     # 3) Construct Δ(iω) = iω·I - t_sIab - [G0(iω)]^{-1} on the original mesh
     iwn_mesh_imp = ir_kernel.wn_mesh('f') * np.pi / ir_kernel.beta
-    delta_estimate = np.zeros(g_weiss_wsab.shape, dtype=complex)
+    delta_estimate = np.zeros(g_weiss_wsIab.shape, dtype=complex)
     nbnd = t_sIab_estimate.shape[-1]
     for n in range(delta_estimate.shape[0]):
         for s in range(nspin):
-            g_weiss_inv = np.linalg.inv(g_weiss_wsab[n, s])
-            delta_estimate[n, s] = 1j * iwn_mesh_imp[n] * np.eye(nbnd) - t_sIab_estimate[s] - g_weiss_inv
+            for I in range(nImp):
+                g_weiss_inv = np.linalg.inv(g_weiss_wsIab[n,s,I])
+                delta_estimate[n,s,I] = 1j * iwn_mesh_imp[n] * np.eye(nbnd) - t_sIab_estimate[s,I] - g_weiss_inv
 
     # 4) checking the leakage of the resulting Δ(iω)
     ir_kernel.check_leakage(delta_estimate, 'f', 'delta_estimate', w_input=True)
@@ -191,33 +193,42 @@ def read_t_and_delta(aimb_h5, it_1e=None):
     return t_sIab, delta_wsIab
 
 
-def tail_fit_g_weiss(g_weiss_wsIab, ir_kernel, gw_data,
-                     wmax_imp=None, eps_imp=None,
-                     high_freq_multiplier=10):
-    mpi.report("Extracting H_loc0 and hybridization from tail fitting fermionic Weiss field g.")
+def get_ir_imp_kernel(ir_kernel, gw_data):
     # if user-defined wmax and eps for the impurity
-    if wmax_imp is not None or eps_imp is not None:
+    # Here we only change wmax while keeping prec the same
+    custom_ir_kernel = ir_kernel.wmax != gw_data["imp_wmax"]
+    if custom_ir_kernel:
         ir_imp_kernel = IAFT(
             beta=gw_data['beta'],
-            wmax=gw_data['gw_dlr_wmax'],
-            prec=gw_data['gw_ir_prec'],
-            verbose=False
+            wmax=gw_data['imp_wmax'],
+            prec=gw_data['gw_prec'],
+            verbose=True
         )
-        g_imp = ir_kernel.w_interpolate(g_weiss_wsIab, ir_imp_kernel, 'f')
-        ir_imp_kernel.check_leakage(
-            g_imp, 'f',
-            "fermionic Weiss field on the customized imaginary meshes",
-            w_input=True
-        )
+        return ir_imp_kernel
     else:
-        ir_imp_kernel = ir_kernel
-        g_imp = g_weiss_wsIab
+        return ir_kernel
 
-    mpi.report("")
+
+def compute_g_weiss(t_sIab, delta_wsIab, ir_kernel):
+    # reconstruct g_weiss
+    g_weiss = np.zeros(delta_wsIab.shape, dtype=complex)
+    eye = np.eye(delta_wsIab.shape[-1], dtype=complex)
+    iw_mesh = 1j * ir_kernel.wn_mesh('f').astype(float) * np.pi / ir_kernel.beta
+    for n, iw in enumerate(iw_mesh):
+        for s in range(delta_wsIab.shape[1]):
+            for I in range(delta_wsIab.shape[2]):
+                # g_weiss(iw) = [ iw - t - delta(iw) ]^-1
+                tmp = iw * eye - t_sIab[s, I] - delta_wsIab[n, s, I]
+                g_weiss[n, s, I] = np.linalg.inv(tmp)
+    return g_weiss
+
+
+def tail_fit_g_weiss(g_weiss_wsIab, ir_kernel, high_freq_multiplier=10):
+    mpi.report("Extracting H_loc0 and hybridization from tail fitting fermionic Weiss field g.\n")
     # extracting H0 and Delta from g_weiss
-    t_sIab, delta_wsIab = extract_h0_and_delta(g_imp, ir_imp_kernel, high_freq_multiplier)
+    t_sIab, delta_wsIab = extract_h0_and_delta(g_weiss_wsIab, ir_kernel, high_freq_multiplier)
 
-    return t_sIab, delta_wsIab, ir_imp_kernel
+    return compute_g_weiss(t_sIab, delta_wsIab, ir_kernel), t_sIab, delta_wsIab
 
 
 def causal_projection(A_wsab, iw_mesh, statistics, Np=5,

@@ -42,7 +42,10 @@ from triqs.gf import (
 from triqs.gf.meshes import MeshDLRImFreq, MeshDLRImTime
 import itertools
 
-from solid_dmft.gw_embedding.utils import get_dlr_from_IR, tail_fit_g_weiss, causal_projection
+from solid_dmft.gw_embedding.utils import (
+    get_dlr_from_IR, tail_fit_g_weiss, causal_projection,
+    compute_g_weiss, get_ir_imp_kernel
+)
 from solid_dmft.gw_embedding.iaft import IAFT, set_precision
 
 HARTREE_EV = physical_constants['Hartree energy in eV'][0]
@@ -83,7 +86,6 @@ def convert_gw_output(job_h5, gw_params,
 
     gw_h5            = gw_params['h5_file']
     it_1e, it_2e     = gw_params['it_1e'], gw_params['it_2e']
-    delta_calc_type  = gw_params['delta_calc_type']
     delta_causal_fit = gw_params['delta_causal_fit']
     u_zero_slope     = gw_params['u_zero_slope']
 
@@ -100,37 +102,32 @@ def convert_gw_output(job_h5, gw_params,
             it_2e = ar['downfold_2e/final_iter']
 
         mpi.report(f'Reading results from downfold_1e iter {it_1e} and downfold_2e iter {it_2e} from the CoQui checkpoint.')
-
-        # auxilary quantities
         gw_data['it_1e'] = it_1e
         gw_data['it_2e'] = it_2e
         gw_data['mu_emb'] = ar[f'downfold_1e/iter{it_1e}']['mu']
+
         gw_data['beta'] = ar['imaginary_fourier_transform']['beta']
-        gw_data['lam'] = ar['imaginary_fourier_transform']['lambda']
         if 'wmax' in ar['imaginary_fourier_transform']:
             gw_data['gw_wmax'] = ar['imaginary_fourier_transform']['wmax']
         else:
-            gw_data['gw_wmax'] = gw_data['lam'] / gw_data['beta']
-        gw_data['gw_dlr_wmax'] = gw_data['gw_wmax'] if dlr_wmax is None else dlr_wmax
+            ir_lambda = ar['imaginary_fourier_transform']['lambda']
+            gw_data['gw_wmax'] = ir_lambda / gw_data['beta']
+        gw_data['gw_prec'] = set_precision(ar['imaginary_fourier_transform']['prec'])
+
+        gw_data['imp_wmax'] = gw_data['gw_wmax'] if dlr_wmax is None else dlr_wmax
+        gw_data['imp_prec'] = gw_data['gw_prec'] if dlr_eps is None else dlr_eps
+
         gw_data['number_of_spins'] = ar['system/number_of_spins']
         assert gw_data['number_of_spins'] == 1, 'spin calculations not yet supported in converter'
 
-        prec = ar['imaginary_fourier_transform']['prec']
-        gw_data['gw_ir_prec'] = set_precision(prec)
-        if dlr_eps is None:
-            gw_data['gw_ir_prec'] = gw_data['gw_ir_prec'] if gw_data['gw_ir_prec'] >= 1e-13 else 1e-13
-        else:
-            gw_data['gw_dlr_prec'] = dlr_eps
-
         # 1 particle properties
         g_weiss_wsIab = ar[f'downfold_1e/iter{it_1e}']['g_weiss_wsIab']
-        delta_wsIab = np.zeros(g_weiss_wsIab.shape, dtype=g_weiss_wsIab.dtype)
+
         Sigma_dc_wsIab = ar[f'downfold_1e/iter{it_1e}']['Sigma_dc_wsIab']
         Gloc = ar[f'downfold_1e/iter{it_1e}']['Gloc_wsIab']
         gw_data['n_inequiv_shells'] = Gloc.shape[2]
 
         # 2 particle properties
-        # TODO: discuss how the site index is used right now in bDFT
         Vloc_jk = ar[f'downfold_2e/iter{it_2e}']['Vloc_abcd']
         Uloc_ir_jk = ar[f'downfold_2e/iter{it_2e}']['Uloc_wabcd'][:, ...]
         # switch inner two indices to match triqs notation
@@ -170,48 +167,48 @@ def convert_gw_output(job_h5, gw_params,
     mpi.report('Creating IR kernel and convert to DLR.')
     # create IR kernel
     mpi.report("\nReading IR representation from CoQuí...")
-    ir_kernel = IAFT(beta=gw_data['beta'], wmax=gw_data['gw_wmax'], prec=gw_data['gw_ir_prec'])
+    ir_gw_kernel = IAFT(beta=gw_data['beta'], wmax=gw_data['gw_wmax'], prec=gw_data['gw_prec'])
+    ir_imp_kernel = get_ir_imp_kernel(ir_gw_kernel, gw_data)
 
-    mpi.report("Constructing DLR mesh (wmax, eps) = ({}, {})...".format(gw_data['gw_dlr_wmax'], gw_data['gw_dlr_prec']))
+    mpi.report("Constructing DLR mesh (wmax, eps) = ({}, {})...".format(gw_data['imp_wmax'], gw_data['imp_prec']))
     gw_data['mesh_dlr_iw_b'] = MeshDLRImFreq(
         beta=gw_data['beta'] / conv_fac,
         statistic='Boson',
-        w_max=gw_data['gw_dlr_wmax'] * conv_fac,
-        eps=gw_data['gw_dlr_prec'],
+        w_max=gw_data['imp_wmax'] * conv_fac,
+        eps=gw_data['imp_prec'],
         symmetrize=True
     )
     gw_data['mesh_dlr_iw_f'] = MeshDLRImFreq(
         beta=gw_data['beta'] / conv_fac,
         statistic='Fermion',
-        w_max=gw_data['gw_dlr_wmax'] * conv_fac,
-        eps=gw_data['gw_dlr_prec'],
+        w_max=gw_data['imp_wmax'] * conv_fac,
+        eps=gw_data['imp_prec'],
         symmetrize=True
     )
 
-    if delta_calc_type not in {"analytic", "tail_fit"}:
-        raise ValueError("calc_type must be either \'analytic\' or \'tail_fit\'.")
+    if ir_imp_kernel != ir_gw_kernel:
+        g_weiss_wsIab = ir_gw_kernel.w_interpolate(g_weiss_wsIab, ir_imp_kernel, 'f')
+        ir_imp_kernel.check_leakage(
+            g_weiss_wsIab, 'f',
+            "fermionic Weiss field on the imaginary meshes for impurity problems",
+            w_input=True
+        )
+    g_weiss_wsIab, Hloc0, delta_wsIab = tail_fit_g_weiss(
+        g_weiss_wsIab, ir_imp_kernel
+    )
 
-    if delta_calc_type == "analytic":
-        raise ValueError("delta_calc_type = analytic is deprecated. "
-                         "Please set delta_calc_type == tail_fit.")
-        Hloc0, delta_wsIab = None, None
-        ir_imp_kernel = ir_kernel
-    elif delta_calc_type == "tail_fit":
-        Hloc0, delta_wsIab, ir_imp_kernel = tail_fit_g_weiss(g_weiss_wsIab, ir_kernel, gw_data,
-                                                             wmax_imp=dlr_wmax, eps_imp=dlr_eps)
     if delta_causal_fit:
         delta_wsIab = causal_projection(
-            delta_wsIab, 1j*ir_imp_kernel.wn_mesh('f')*np.pi/ir_imp_kernel.beta,
+            delta_wsIab, 1j*ir_imp_kernel.wn_mesh('f').astype(float)*np.pi/ir_imp_kernel.beta,
             statistics="fermion", name="hybridization",
             Np=gw_params['delta_bath_per_orbital']
         )
+        # Update g_weiss with the fitted hybridization
+        g_weiss_wsIab = compute_g_weiss(Hloc0, delta_wsIab, ir_imp_kernel)
 
     Hloc0 = Hloc0[0,0]
 
-    # need to update g_weiss?
-
     mpi.report("")
-
     (
         U_dlr_list,
         Pi_DC_dlr_list,
@@ -228,11 +225,11 @@ def convert_gw_output(job_h5, gw_params,
     ) = [], [], [], [], [], [], [], [], [], [], [], []
     for ish in range(gw_data['n_inequiv_shells']):
         # fit IR Uloc on DLR iw mesh
-        temp = get_dlr_from_IR(Uloc_ir*conv_fac, ir_kernel, gw_data['mesh_dlr_iw_b'], dim=4)
+        temp = get_dlr_from_IR(Uloc_ir*conv_fac, ir_gw_kernel, gw_data['mesh_dlr_iw_b'], dim=4)
         Uloc_dlr = BlockGf(name_list=['up', 'down'], block_list=[temp, temp], make_copies=True)
         U_dlr_list.append(Uloc_dlr)
         # in product basis
-        temp = get_dlr_from_IR(Pi_DC_ir.reshape(-1, n_orb**2, n_orb**2)*conv_fac, ir_kernel, gw_data['mesh_dlr_iw_b'], dim=2)
+        temp = get_dlr_from_IR(Pi_DC_ir.reshape(-1, n_orb**2, n_orb**2)*conv_fac, ir_gw_kernel, gw_data['mesh_dlr_iw_b'], dim=2)
         Pi_DC_dlr = BlockGf(name_list=['up', 'down'], block_list=[temp, temp], make_copies=True)
         Pi_DC_dlr_list.append(Pi_DC_dlr)
         V_list.append({'up': Vloc.copy()*conv_fac, 'down': Vloc*conv_fac})
@@ -241,20 +238,19 @@ def convert_gw_output(job_h5, gw_params,
         Vhf_dc_list.append({'up': Vhf_dc_sIab.copy()*conv_fac, 'down': Vhf_dc_sIab*conv_fac})
         n_orb_list.append(n_orb)
 
-        temp = get_dlr_from_IR(g_weiss_wsIab[:, 0, ish, :, :]/conv_fac, ir_kernel, gw_data['mesh_dlr_iw_f'], dim=2)
+        temp = get_dlr_from_IR(g_weiss_wsIab[:, 0, ish, :, :]/conv_fac, ir_imp_kernel, gw_data['mesh_dlr_iw_f'], dim=2)
         G0_dlr = BlockGf(name_list=['up', 'down'], block_list=[temp, temp], make_copies=True)
         G0_dlr_list.append(G0_dlr)
 
-        # FIXME make consistent usage of ir_kernel and ir_imp_kernel
         temp = get_dlr_from_IR(delta_wsIab[:, 0, ish, :, :]/conv_fac, ir_imp_kernel, gw_data['mesh_dlr_iw_f'], dim=2)
         delta_dlr = BlockGf(name_list=['up', 'down'], block_list=[temp, temp], make_copies=True)
         delta_dlr_list.append(delta_dlr)
 
-        temp = get_dlr_from_IR(Gloc[:, 0, ish, :, :]/conv_fac, ir_kernel, gw_data['mesh_dlr_iw_f'], dim=2)
+        temp = get_dlr_from_IR(Gloc[:, 0, ish, :, :]/conv_fac, ir_gw_kernel, gw_data['mesh_dlr_iw_f'], dim=2)
         Gloc_dlr = BlockGf(name_list=['up', 'down'], block_list=[temp, temp], make_copies=True)
         Gloc_dlr_list.append(Gloc_dlr)
 
-        temp = get_dlr_from_IR(Sigma_dc_wsIab[:, 0, ish, :, :]*conv_fac, ir_kernel, gw_data['mesh_dlr_iw_f'], dim=2)
+        temp = get_dlr_from_IR(Sigma_dc_wsIab[:, 0, ish, :, :]*conv_fac, ir_gw_kernel, gw_data['mesh_dlr_iw_f'], dim=2)
         Sigma_DC_dlr = BlockGf(name_list=['up', 'down'], block_list=[temp, temp], make_copies=True)
         Sigma_DC_dlr_list.append(Sigma_DC_dlr)
 
@@ -283,6 +279,6 @@ def convert_gw_output(job_h5, gw_params,
             ar[f'DMFT_input/iter{it_1e}'][key] = value
 
     mpi.report(f'finished writing results in {job_h5}/DMFT_input')
-    return gw_data, ir_kernel
+    return gw_data, ir_gw_kernel
 
 

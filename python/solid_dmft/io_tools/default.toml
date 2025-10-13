@@ -212,7 +212,6 @@ h5_file = "<none>"
 use_rot = false
 it_1e = 0
 it_2e = 0
-delta_calc_type = "tail_fit"
 delta_causal_fit = false
 delta_bath_per_orbital = 8
 u_zero_slope = false
